@@ -9,1247 +9,1481 @@ import { getNapCatRuntime, getNapCatConfig } from "./runtime.js";
 
 // Group name cache removed
 
-
 function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isNapCatStreamingModeEnabled(config: any): boolean {
-    return config?.streaming_mode === true;
+  return config?.streaming_mode === true;
 }
 
 function isNapCatPrivateTypingEnabled(config: any): boolean {
-    return config?.enablePrivateTypingStatus !== false;
+  return config?.enablePrivateTypingStatus !== false;
 }
 
-async function setNapCatPrivateTypingStatus(userId: string, token?: string): Promise<void> {
-    const config = getNapCatConfig();
-    const baseUrl = config.url || "http://127.0.0.1:15150";
-    await sendToNapCat(`${baseUrl}/set_input_status`, {
-        user_id: userId,
-        event_type: 1,
-    }, token);
+async function setNapCatPrivateTypingStatus(
+  userId: string,
+  token?: string,
+): Promise<void> {
+  const config = getNapCatConfig();
+  const baseUrl = config.url || "http://127.0.0.1:15150";
+  await sendToNapCat(
+    `${baseUrl}/set_input_status`,
+    {
+      user_id: userId,
+      event_type: 1,
+    },
+    token,
+  );
 }
 
 function createPrivateTypingStatusController(options: {
-    enabled: boolean;
-    userId: string;
-    token?: string;
-    intervalMs?: number;
+  enabled: boolean;
+  userId: string;
+  token?: string;
+  intervalMs?: number;
 }) {
-    const intervalMs = Math.max(1000, options.intervalMs ?? 4000);
-    let timer: ReturnType<typeof setInterval> | null = null;
-    let stopped = false;
-    let inFlight = false;
+  const intervalMs = Math.max(1000, options.intervalMs ?? 4000);
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+  let inFlight = false;
 
-    const ping = async () => {
-        if (!options.enabled || stopped || inFlight) return;
-        inFlight = true;
-        try {
-            await setNapCatPrivateTypingStatus(options.userId, options.token);
-        } catch (err) {
-            console.error(`[NapCat] Failed to update private typing status for ${options.userId}:`, err);
-        } finally {
-            inFlight = false;
-        }
-    };
+  const ping = async () => {
+    if (!options.enabled || stopped || inFlight) return;
+    inFlight = true;
+    try {
+      await setNapCatPrivateTypingStatus(options.userId, options.token);
+    } catch (err) {
+      console.error(
+        `[NapCat] Failed to update private typing status for ${options.userId}:`,
+        err,
+      );
+    } finally {
+      inFlight = false;
+    }
+  };
 
-    return {
-        start: async () => {
-            if (!options.enabled || stopped) return;
-            await ping();
-            if (!stopped && !timer) {
-                timer = setInterval(() => {
-                    void ping();
-                }, intervalMs);
-            }
-        },
-        stop: () => {
-            stopped = true;
-            if (timer) {
-                clearInterval(timer);
-                timer = null;
-            }
-        }
-    };
+  return {
+    start: async () => {
+      if (!options.enabled || stopped) return;
+      await ping();
+      if (!stopped && !timer) {
+        timer = setInterval(() => {
+          void ping();
+        }, intervalMs);
+      }
+    },
+    stop: () => {
+      stopped = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    },
+  };
 }
 
 const napcatHttpAgent = new HttpAgent({
-    keepAlive: true,
-    keepAliveMsecs: 10000,
-    maxSockets: 20,
-    maxFreeSockets: 10,
+  keepAlive: true,
+  keepAliveMsecs: 10000,
+  maxSockets: 20,
+  maxFreeSockets: 10,
 });
 
 const napcatHttpsAgent = new HttpsAgent({
-    keepAlive: true,
-    keepAliveMsecs: 10000,
-    maxSockets: 20,
-    maxFreeSockets: 10,
+  keepAlive: true,
+  keepAliveMsecs: 10000,
+  maxSockets: 20,
+  maxFreeSockets: 10,
 });
 
 function isRetryableNapCatError(err: any): boolean {
-    const code = String(err?.cause?.code || err?.code || "");
-    return ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "UND_ERR_SOCKET", "ECONNABORTED"].includes(code);
+  const code = String(err?.cause?.code || err?.code || "");
+  return [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "EPIPE",
+    "UND_ERR_SOCKET",
+    "ECONNABORTED",
+  ].includes(code);
 }
 
 async function postJsonWithNodeHttp(
-    url: string,
-    payload: any,
-    timeoutMs: number,
-    opts?: { connectionClose?: boolean; token?: string }
+  url: string,
+  payload: any,
+  timeoutMs: number,
+  opts?: { connectionClose?: boolean; token?: string },
 ): Promise<{ statusCode: number; statusText: string; bodyText: string }> {
-    const target = new URL(url);
-    const isHttps = target.protocol === "https:";
-    const body = JSON.stringify(payload);
-    const transport = isHttps ? httpsRequest : httpRequest;
-    const connectionClose = opts?.connectionClose === true;
-    const normalizedToken = String(opts?.token ?? "").trim();
-    const agent = connectionClose ? undefined : (isHttps ? napcatHttpsAgent : napcatHttpAgent);
+  const target = new URL(url);
+  const isHttps = target.protocol === "https:";
+  const body = JSON.stringify(payload);
+  const transport = isHttps ? httpsRequest : httpRequest;
+  const connectionClose = opts?.connectionClose === true;
+  const normalizedToken = String(opts?.token ?? "").trim();
+  const agent = connectionClose
+    ? undefined
+    : isHttps
+      ? napcatHttpsAgent
+      : napcatHttpAgent;
 
-    return new Promise((resolve, reject) => {
-        const headers: Record<string, string | number> = {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-            "Connection": connectionClose ? "close" : "keep-alive",
-        };
-        if (normalizedToken) {
-            headers["Authorization"] = `Bearer ${normalizedToken}`;
-        }
-        const req = transport(
-            {
-                protocol: target.protocol,
-                hostname: target.hostname,
-                port: target.port || (isHttps ? 443 : 80),
-                path: `${target.pathname}${target.search}`,
-                method: "POST",
-                agent,
-                headers,
-            },
-            (res) => {
-                const chunks: Buffer[] = [];
-                res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-                res.on("end", () => {
-                    const bodyText = Buffer.concat(chunks).toString("utf8");
-                    resolve({
-                        statusCode: res.statusCode || 0,
-                        statusText: res.statusMessage || "",
-                        bodyText,
-                    });
-                });
-            }
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string | number> = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      Connection: connectionClose ? "close" : "keep-alive",
+    };
+    if (normalizedToken) {
+      headers["Authorization"] = `Bearer ${normalizedToken}`;
+    }
+    const req = transport(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (isHttps ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        agent,
+        headers,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) =>
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
         );
-
-        req.setTimeout(timeoutMs, () => {
-            req.destroy(Object.assign(new Error(`NapCat request timeout after ${timeoutMs}ms`), { code: "ETIMEDOUT" }));
+        res.on("end", () => {
+          const bodyText = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            statusCode: res.statusCode || 0,
+            statusText: res.statusMessage || "",
+            bodyText,
+          });
         });
+      },
+    );
 
-        req.on("error", reject);
-        req.write(body);
-        req.end();
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(
+        Object.assign(
+          new Error(`NapCat request timeout after ${timeoutMs}ms`),
+          { code: "ETIMEDOUT" },
+        ),
+      );
     });
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 // Send message via NapCat API (node http/https keep-alive + retry for transient socket errors)
 async function sendToNapCat(url: string, payload: any, token?: string) {
-    const maxAttempts = 3;
-    const timeoutsMs = [5000, 7000, 9000];
-    const cfg = getNapCatConfig();
-    const connectionClose = cfg.connectionClose !== false; // default true for local docker stability
-    const target = new URL(url);
-    const targetInfo = `${target.protocol}//${target.hostname}:${target.port || (target.protocol === "https:" ? "443" : "80")}${target.pathname}`;
+  const maxAttempts = 3;
+  const timeoutsMs = [5000, 7000, 9000];
+  const cfg = getNapCatConfig();
+  const connectionClose = cfg.connectionClose !== false; // default true for local docker stability
+  const target = new URL(url);
+  const targetInfo = `${target.protocol}//${target.hostname}:${target.port || (target.protocol === "https:" ? "443" : "80")}${target.pathname}`;
 
-    let lastErr: any = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const startedAt = Date.now();
-        try {
-            const timeoutMs = timeoutsMs[Math.min(attempt - 1, timeoutsMs.length - 1)];
-            const res = await postJsonWithNodeHttp(url, payload, timeoutMs, { connectionClose, token });
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const startedAt = Date.now();
+    try {
+      const timeoutMs =
+        timeoutsMs[Math.min(attempt - 1, timeoutsMs.length - 1)];
+      const res = await postJsonWithNodeHttp(url, payload, timeoutMs, {
+        connectionClose,
+        token,
+      });
 
-            if (res.statusCode < 200 || res.statusCode >= 300) {
-                throw new Error(`NapCat API Error: ${res.statusCode} ${res.statusText}${res.bodyText ? ` | ${res.bodyText.slice(0, 300)}` : ""}`);
-            }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw new Error(
+          `NapCat API Error: ${res.statusCode} ${res.statusText}${res.bodyText ? ` | ${res.bodyText.slice(0, 300)}` : ""}`,
+        );
+      }
 
-            const elapsedMs = Date.now() - startedAt;
-            console.log(`[NapCat] sendToNapCat success attempt ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms (connection=${connectionClose ? "close" : "keep-alive"})`);
+      const elapsedMs = Date.now() - startedAt;
+      console.log(
+        `[NapCat] sendToNapCat success attempt ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms (connection=${connectionClose ? "close" : "keep-alive"})`,
+      );
 
-            if (!res.bodyText) return { status: "ok" };
-            try {
-                return JSON.parse(res.bodyText);
-            } catch {
-                return { status: "ok", raw: res.bodyText };
-            }
-        } catch (err: any) {
-            lastErr = err;
-            const retryable = isRetryableNapCatError(err);
-            const elapsedMs = Date.now() - startedAt;
-            if (!retryable || attempt >= maxAttempts) {
-                console.error(`[NapCat] sendToNapCat failed attempt ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms: ${err?.cause?.code || err?.code || err}`);
-                break;
-            }
-            const backoffMs = attempt * 400;
-            console.warn(`[NapCat] sendToNapCat retry ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms; backoff ${backoffMs}ms; reason=${err?.cause?.code || err?.code || err}`);
-            await sleep(backoffMs);
-        }
+      if (!res.bodyText) return { status: "ok" };
+      try {
+        return JSON.parse(res.bodyText);
+      } catch {
+        return { status: "ok", raw: res.bodyText };
+      }
+    } catch (err: any) {
+      lastErr = err;
+      const retryable = isRetryableNapCatError(err);
+      const elapsedMs = Date.now() - startedAt;
+      if (!retryable || attempt >= maxAttempts) {
+        console.error(
+          `[NapCat] sendToNapCat failed attempt ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms: ${err?.cause?.code || err?.code || err}`,
+        );
+        break;
+      }
+      const backoffMs = attempt * 400;
+      console.warn(
+        `[NapCat] sendToNapCat retry ${attempt}/${maxAttempts} ${targetInfo} in ${elapsedMs}ms; backoff ${backoffMs}ms; reason=${err?.cause?.code || err?.code || err}`,
+      );
+      await sleep(backoffMs);
     }
+  }
 
-    throw lastErr;
+  throw lastErr;
 }
 
 async function buildNapCatMessageFromReply(
-    payload: { text?: string; mediaUrl?: string; mediaUrls?: string[]; audioAsVoice?: boolean },
-    config: any
+  payload: {
+    text?: string;
+    mediaUrl?: string;
+    mediaUrls?: string[];
+    audioAsVoice?: boolean;
+  },
+  config: any,
 ) {
-    const text = payload.text?.trim() || "";
-    const mediaCandidates = [
-        ...(payload.mediaUrls || []),
-        ...(payload.mediaUrl ? [payload.mediaUrl] : [])
-    ];
-    const mediaSegments = await Promise.all(
-        mediaCandidates
-            .map((url) => String(url || "").trim())
-            .filter(Boolean)
-            .map((url) => buildNapCatMediaCq(url, config, payload.audioAsVoice === true))
-    );
+  const text = payload.text?.trim() || "";
+  const mediaCandidates = [
+    ...(payload.mediaUrls || []),
+    ...(payload.mediaUrl ? [payload.mediaUrl] : []),
+  ];
+  const mediaSegments = await Promise.all(
+    mediaCandidates
+      .map((url) => String(url || "").trim())
+      .filter(Boolean)
+      .map((url) =>
+        buildNapCatMediaCq(url, config, payload.audioAsVoice === true),
+      ),
+  );
 
-    if (text && mediaSegments.length > 0) return `${text}\n${mediaSegments.join("\n")}`;
-    if (text) return text;
-    return mediaSegments.join("\n");
+  if (text && mediaSegments.length > 0)
+    return `${text}\n${mediaSegments.join("\n")}`;
+  if (text) return text;
+  return mediaSegments.join("\n");
 }
 
 function getContentTypeByPath(filePath: string): string {
-    const ext = extname(filePath).toLowerCase();
-    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-    if (ext === ".png") return "image/png";
-    if (ext === ".gif") return "image/gif";
-    if (ext === ".webp") return "image/webp";
-    if (ext === ".bmp") return "image/bmp";
-    if (ext === ".svg") return "image/svg+xml";
-    return "application/octet-stream";
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".png") return "image/png";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".bmp") return "image/bmp";
+  if (ext === ".svg") return "image/svg+xml";
+  return "application/octet-stream";
 }
 
-async function handleMediaProxyRequest(res: ServerResponse, url: string): Promise<boolean> {
-    const config = getNapCatConfig();
-    if (config.mediaProxyEnabled !== true) {
-        res.statusCode = 404;
-        res.end("not found");
+async function handleMediaProxyRequest(
+  res: ServerResponse,
+  url: string,
+): Promise<boolean> {
+  const config = getNapCatConfig();
+  if (config.mediaProxyEnabled !== true) {
+    res.statusCode = 404;
+    res.end("not found");
+    return true;
+  }
+
+  const parsed = new URL(url, "http://127.0.0.1");
+  if (parsed.pathname !== "/napcat/media") {
+    res.statusCode = 404;
+    res.end("not found");
+    return true;
+  }
+
+  const expectedToken = String(config.mediaProxyToken || "").trim();
+  const token = String(parsed.searchParams.get("token") || "").trim();
+  if (expectedToken && token !== expectedToken) {
+    res.statusCode = 403;
+    res.end("forbidden");
+    return true;
+  }
+
+  const mediaUrl = String(parsed.searchParams.get("url") || "").trim();
+  if (!mediaUrl) {
+    res.statusCode = 400;
+    res.end("missing url");
+    return true;
+  }
+
+  try {
+    if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      const upstream = await fetch(mediaUrl);
+      if (!upstream.ok) {
+        res.statusCode = 502;
+        res.end(`upstream fetch failed: ${upstream.status}`);
         return true;
+      }
+      const contentType =
+        upstream.headers.get("content-type") || "application/octet-stream";
+      res.statusCode = 200;
+      res.setHeader("Content-Type", contentType);
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader("Content-Length", buffer.length);
+      res.end(buffer);
+      return true;
     }
 
-    const parsed = new URL(url, "http://127.0.0.1");
-    if (parsed.pathname !== "/napcat/media") {
-        res.statusCode = 404;
-        res.end("not found");
-        return true;
+    let filePath = mediaUrl;
+    if (mediaUrl.startsWith("file://")) {
+      filePath = decodeURIComponent(new URL(mediaUrl).pathname);
+    }
+    if (!filePath.startsWith("/")) {
+      res.statusCode = 400;
+      res.end("unsupported media url");
+      return true;
     }
 
-    const expectedToken = String(config.mediaProxyToken || "").trim();
-    const token = String(parsed.searchParams.get("token") || "").trim();
-    if (expectedToken && token !== expectedToken) {
-        res.statusCode = 403;
-        res.end("forbidden");
-        return true;
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) {
+      res.statusCode = 404;
+      res.end("file not found");
+      return true;
     }
 
-    const mediaUrl = String(parsed.searchParams.get("url") || "").trim();
-    if (!mediaUrl) {
-        res.statusCode = 400;
-        res.end("missing url");
-        return true;
-    }
-
-    try {
-        if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
-            const upstream = await fetch(mediaUrl);
-            if (!upstream.ok) {
-                res.statusCode = 502;
-                res.end(`upstream fetch failed: ${upstream.status}`);
-                return true;
-            }
-            const contentType = upstream.headers.get("content-type") || "application/octet-stream";
-            res.statusCode = 200;
-            res.setHeader("Content-Type", contentType);
-            const buffer = Buffer.from(await upstream.arrayBuffer());
-            res.setHeader("Content-Length", buffer.length);
-            res.end(buffer);
-            return true;
-        }
-
-        let filePath = mediaUrl;
-        if (mediaUrl.startsWith("file://")) {
-            filePath = decodeURIComponent(new URL(mediaUrl).pathname);
-        }
-        if (!filePath.startsWith("/")) {
-            res.statusCode = 400;
-            res.end("unsupported media url");
-            return true;
-        }
-
-        const fileStat = await stat(filePath);
-        if (!fileStat.isFile()) {
-            res.statusCode = 404;
-            res.end("file not found");
-            return true;
-        }
-
-        res.statusCode = 200;
-        res.setHeader("Content-Type", getContentTypeByPath(filePath));
-        res.setHeader("Content-Length", fileStat.size);
-        createReadStream(filePath).pipe(res);
-        return true;
-    } catch (err) {
-        console.error("[NapCat] Media proxy error:", err);
-        res.statusCode = 500;
-        res.end("media proxy error");
-        return true;
-    }
+    res.statusCode = 200;
+    res.setHeader("Content-Type", getContentTypeByPath(filePath));
+    res.setHeader("Content-Length", fileStat.size);
+    createReadStream(filePath).pipe(res);
+    return true;
+  } catch (err) {
+    console.error("[NapCat] Media proxy error:", err);
+    res.statusCode = 500;
+    res.end("media proxy error");
+    return true;
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<any> {
-    return new Promise((resolve, reject) => {
-        let data = "";
-        req.on("data", chunk => data += chunk);
-        req.on("end", () => {
-            try {
-                if (!data) {
-                    resolve({});
-                    return;
-                }
-                resolve(JSON.parse(data));
-            } catch (e) {
-                console.error("NapCat JSON Parse Error:", e);
-                // Some deployments send form-urlencoded bodies with nested JSON payload.
-                try {
-                    const params = new URLSearchParams(data);
-                    const wrapped = params.get("payload") || params.get("data") || params.get("message");
-                    if (wrapped) {
-                        resolve(JSON.parse(wrapped));
-                        return;
-                    }
-                } catch {
-                    // Fall through and preserve raw body for diagnostics.
-                }
-                resolve({ __raw: data, __parseError: true });
-            }
-        });
-        req.on("error", reject);
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => {
+      try {
+        if (!data) {
+          resolve({});
+          return;
+        }
+        resolve(JSON.parse(data));
+      } catch (e) {
+        console.error("NapCat JSON Parse Error:", e);
+        // Some deployments send form-urlencoded bodies with nested JSON payload.
+        try {
+          const params = new URLSearchParams(data);
+          const wrapped =
+            params.get("payload") ||
+            params.get("data") ||
+            params.get("message");
+          if (wrapped) {
+            resolve(JSON.parse(wrapped));
+            return;
+          }
+        } catch {
+          // Fall through and preserve raw body for diagnostics.
+        }
+        resolve({ __raw: data, __parseError: true });
+      }
     });
+    req.on("error", reject);
+  });
 }
 
 function sanitizeLogToken(raw: string): string {
-    return String(raw || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return String(raw || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 function extractNapCatMessageSegments(input: any): any[] {
-    if (Array.isArray(input)) {
-        return input.filter((item) => item && typeof item === "object");
-    }
-    if (input && typeof input === "object" && typeof input.type === "string") {
-        return [input];
-    }
-    if (typeof input === "string") {
-        return [{ type: "text", data: { text: input } }];
-    }
-    return [];
+  if (Array.isArray(input)) {
+    return input.filter((item) => item && typeof item === "object");
+  }
+  if (input && typeof input === "object" && typeof input.type === "string") {
+    return [input];
+  }
+  if (typeof input === "string") {
+    return [{ type: "text", data: { text: input } }];
+  }
+  return [];
 }
 
 function extractForwardEntries(input: any): any[] {
-    if (!input) return [];
-    if (Array.isArray(input)) {
-        return input.filter((item) => item && typeof item === "object");
-    }
-    if (typeof input !== "object") return [];
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input.filter((item) => item && typeof item === "object");
+  }
+  if (typeof input !== "object") return [];
 
-    const candidates = [
-        input.messages,
-        input.message,
-        input.content,
-        input.data?.messages,
-        input.data?.message,
-        input.data?.content,
-    ];
+  const candidates = [
+    input.messages,
+    input.message,
+    input.content,
+    input.data?.messages,
+    input.data?.message,
+    input.data?.content,
+  ];
 
-    for (const candidate of candidates) {
-        if (Array.isArray(candidate)) {
-            return candidate.filter((item) => item && typeof item === "object");
-        }
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.filter((item) => item && typeof item === "object");
     }
-    return [];
+  }
+  return [];
 }
 
 function formatInlineSegmentLabel(prefix: string, value?: string): string {
-    const normalizedValue = String(value || "").trim();
-    return normalizedValue ? `[${prefix}:${normalizedValue}]` : `[${prefix}]`;
+  const normalizedValue = String(value || "").trim();
+  return normalizedValue ? `[${prefix}:${normalizedValue}]` : `[${prefix}]`;
 }
 
 function normalizeRenderedMessageText(text: string): string {
-    return text
-        .replace(/\r\n/g, "\n")
-        .replace(/[ \t]+\n/g, "\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 async function fetchNapCatForwardEntries(
-    forwardId: string,
-    config: any,
-    cache: Map<string, any[] | null>
+  forwardId: string,
+  config: any,
+  cache: Map<string, any[] | null>,
 ): Promise<any[] | null> {
-    const normalizedId = String(forwardId || "").trim();
-    if (!normalizedId) return null;
-    if (cache.has(normalizedId)) {
-        return cache.get(normalizedId) ?? null;
-    }
+  const normalizedId = String(forwardId || "").trim();
+  if (!normalizedId) return null;
+  if (cache.has(normalizedId)) {
+    return cache.get(normalizedId) ?? null;
+  }
 
-    const baseUrl = String(config.url || "http://127.0.0.1:15150").trim().replace(/\/+$/, "");
-    const token = String(config.token || "").trim();
+  const baseUrl = String(config.url || "http://127.0.0.1:15150")
+    .trim()
+    .replace(/\/+$/, "");
+  const token = String(config.token || "").trim();
 
-    try {
-        const result = await sendToNapCat(`${baseUrl}/get_forward_msg`, { message_id: normalizedId }, token);
-        const entries = extractForwardEntries(result?.data ?? result);
-        cache.set(normalizedId, entries.length > 0 ? entries : null);
-        return cache.get(normalizedId) ?? null;
-    } catch (err) {
-        console.error(`[NapCat] Failed to fetch forward message ${normalizedId}:`, err);
-        cache.set(normalizedId, null);
-        return null;
-    }
+  try {
+    const result = await sendToNapCat(
+      `${baseUrl}/get_forward_msg`,
+      { message_id: normalizedId },
+      token,
+    );
+    const entries = extractForwardEntries(result?.data ?? result);
+    cache.set(normalizedId, entries.length > 0 ? entries : null);
+    return cache.get(normalizedId) ?? null;
+  } catch (err) {
+    console.error(
+      `[NapCat] Failed to fetch forward message ${normalizedId}:`,
+      err,
+    );
+    cache.set(normalizedId, null);
+    return null;
+  }
 }
 
 // 通过 NapCat HTTP API 获取指定消息的完整内容
 async function fetchNapCatMsg(
-    messageId: string,
-    config: any
+  messageId: string,
+  config: any,
 ): Promise<any | null> {
-    const normalizedId = String(messageId || "").trim();
-    if (!normalizedId) return null;
+  const normalizedId = String(messageId || "").trim();
+  if (!normalizedId) return null;
 
-    const baseUrl = String(config.url || "http://127.0.0.1:15150").trim().replace(/\/+$/, "");
-    const token = String(config.token || "").trim();
+  const baseUrl = String(config.url || "http://127.0.0.1:15150")
+    .trim()
+    .replace(/\/+$/, "");
+  const token = String(config.token || "").trim();
 
-    // NapCat 的 get_msg 接口可能接受 message_id 或 id 参数，都试一下
-    const tries: Array<Record<string, any>> = [
-        { message_id: normalizedId },
-        { id: normalizedId },
-    ];
-    if (/^\d+$/.test(normalizedId)) {
-        const n = Number.parseInt(normalizedId, 10);
-        tries.unshift({ message_id: n });
-        tries.push({ id: n });
+  // NapCat 的 get_msg 接口可能接受 message_id 或 id 参数，都试一下
+  const tries: Array<Record<string, any>> = [
+    { message_id: normalizedId },
+    { id: normalizedId },
+  ];
+  if (/^\d+$/.test(normalizedId)) {
+    const n = Number.parseInt(normalizedId, 10);
+    tries.unshift({ message_id: n });
+    tries.push({ id: n });
+  }
+
+  let lastErr: unknown;
+  for (const params of tries) {
+    try {
+      const result = await sendToNapCat(`${baseUrl}/get_msg`, params, token);
+      const data = result?.data ?? result;
+      if (
+        data &&
+        typeof data === "object" &&
+        (data.message || data.raw_message)
+      ) {
+        return data;
+      }
+    } catch (err) {
+      console.warn(
+        `[NapCat] get_msg failed for ${normalizedId}: ${String(err)}`,
+      );
+      lastErr = err;
     }
-
-    let lastErr: unknown;
-    for (const params of tries) {
-        try {
-            const result = await sendToNapCat(`${baseUrl}/get_msg`, params, token);
-            const data = result?.data ?? result;
-            if (data && typeof data === "object" && (data.message || data.raw_message)) {
-                return data;
-            }
-        } catch (err) {
-            console.warn(`[NapCat] get_msg failed for ${normalizedId}: ${String(err)}`);
-            lastErr = err;
-        }
-    }
-    return null;
+  }
+  return null;
 }
 
 // 从消息段数组中提取 reply 类型的引用消息 ID
 function getNapCatReplyMessageId(segments: any[]): string | null {
-    if (!Array.isArray(segments)) return null;
-    for (const seg of segments) {
-        if (!seg || typeof seg !== "object") continue;
-        const type = String(seg?.type || "").trim().toLowerCase();
-        if (type !== "reply" && type !== "quote") continue;
-        const data = seg?.data && typeof seg.data === "object" ? seg.data : {};
-        const idCandidate = data.id ?? data.message_id ?? data.reply;
-        const id = typeof idCandidate === "number" ? String(idCandidate) : String(idCandidate || "").trim();
-        if (id && /^-?\d+$/.test(id)) return id;
-    }
-    return null;
+  if (!Array.isArray(segments)) return null;
+  for (const seg of segments) {
+    if (!seg || typeof seg !== "object") continue;
+    const type = String(seg?.type || "")
+      .trim()
+      .toLowerCase();
+    if (type !== "reply" && type !== "quote") continue;
+    const data = seg?.data && typeof seg.data === "object" ? seg.data : {};
+    const idCandidate = data.id ?? data.message_id ?? data.reply;
+    const id =
+      typeof idCandidate === "number"
+        ? String(idCandidate)
+        : String(idCandidate || "").trim();
+    if (id && /^-?\d+$/.test(id)) return id;
+  }
+  return null;
 }
 
 // 从 CQ 码格式的原始消息中提取引用消息 ID
 function getNapCatReplyIdFromRaw(raw: string): string | null {
-    if (!raw) return null;
-    const match = raw.match(/\[CQ:reply,id=(\d+)\]/);
-    if (match) return match[1];
-    return null;
+  if (!raw) return null;
+  const match = raw.match(/\[CQ:reply,id=(\d+)\]/);
+  if (match) return match[1];
+  return null;
 }
 
 // 综合多种方式从事件中提取引用消息 ID
 function getNapCatReplyIdFromEvent(event: any): string | null {
-    // 先从消息段数组中找 reply 类型
-    const segments = extractNapCatMessageSegments(event?.message);
-    const fromSegments = getNapCatReplyMessageId(segments);
-    if (fromSegments) return fromSegments;
+  // 先从消息段数组中找 reply 类型
+  const segments = extractNapCatMessageSegments(event?.message);
+  const fromSegments = getNapCatReplyMessageId(segments);
+  if (fromSegments) return fromSegments;
 
-    // 再查 CQ 码格式的原始消息
-    const fromRaw = getNapCatReplyIdFromRaw(event?.raw_message || event?.message);
-    if (fromRaw) return fromRaw;
+  // 再查 CQ 码格式的原始消息
+  const fromRaw = getNapCatReplyIdFromRaw(event?.raw_message || event?.message);
+  if (fromRaw) return fromRaw;
 
-    // 最后查事件顶层字段（部分实现会放在 source/reply 字段里）
-    const candidates = [
-        event?.source?.message_id,
-        event?.source?.id,
-        event?.reply?.message_id,
-        event?.reply?.id,
-    ];
-    for (const c of candidates) {
-        const id = typeof c === "number" ? String(c) : (typeof c === "string" ? c.trim() : "");
-        if (id && /^-?\d+$/.test(id)) return id;
-    }
+  // 最后查事件顶层字段（部分实现会放在 source/reply 字段里）
+  const candidates = [
+    event?.source?.message_id,
+    event?.source?.id,
+    event?.reply?.message_id,
+    event?.reply?.id,
+  ];
+  for (const c of candidates) {
+    const id =
+      typeof c === "number" ? String(c) : typeof c === "string" ? c.trim() : "";
+    if (id && /^-?\d+$/.test(id)) return id;
+  }
 
-    return null;
+  return null;
 }
 
 // 递归解析引用链，构建 <context_layers> 上下文块注入给智能体
 async function buildNapCatReplyContextBlock(params: {
-    event: any;
-    config: any;
+  event: any;
+  config: any;
 }): Promise<{ block: string; repliedMsg: any | null; replyId: string | null }> {
-    const { event, config } = params;
-    if (config.enrichReplyContext === false) return { block: "", repliedMsg: null, replyId: null };
+  const { event, config } = params;
+  if (config.enrichReplyContext === false)
+    return { block: "", repliedMsg: null, replyId: null };
 
-    const replyId = getNapCatReplyIdFromEvent(event);
-    if (!replyId) return { block: "", repliedMsg: null, replyId: null };
+  const replyId = getNapCatReplyIdFromEvent(event);
+  if (!replyId) return { block: "", repliedMsg: null, replyId: null };
 
-    // 从配置读取各层限制参数
-    const maxReplyLayers = Math.max(1, Math.trunc(config.maxReplyLayers ?? 5));
-    const maxCharsPerLayer = Math.max(100, Math.trunc(config.maxCharsPerLayer ?? 500));
-    const maxTotalContextChars = Math.max(300, Math.trunc(config.maxTotalContextChars ?? 2000));
-    const includeSender = config.includeSenderInLayers !== false;
+  // 从配置读取各层限制参数
+  const maxReplyLayers = Math.max(1, Math.trunc(config.maxReplyLayers ?? 5));
+  const maxCharsPerLayer = Math.max(
+    100,
+    Math.trunc(config.maxCharsPerLayer ?? 500),
+  );
+  const maxTotalContextChars = Math.max(
+    300,
+    Math.trunc(config.maxTotalContextChars ?? 2000),
+  );
+  const includeSender = config.includeSenderInLayers !== false;
 
-    const lines: string[] = [];
-    let usedChars = 0;
-    const pushLine = (line: string) => {
-        if (!line) return;
-        if (usedChars >= maxTotalContextChars) return;
-        const remaining = maxTotalContextChars - usedChars;
-        const safe = line.length <= remaining ? line : `${line.slice(0, Math.max(0, remaining - 1))}…`;
-        if (!safe) return;
-        lines.push(safe);
-        usedChars += safe.length + 1;
-    };
+  const lines: string[] = [];
+  let usedChars = 0;
+  const pushLine = (line: string) => {
+    if (!line) return;
+    if (usedChars >= maxTotalContextChars) return;
+    const remaining = maxTotalContextChars - usedChars;
+    const safe =
+      line.length <= remaining
+        ? line
+        : `${line.slice(0, Math.max(0, remaining - 1))}…`;
+    if (!safe) return;
+    lines.push(safe);
+    usedChars += safe.length + 1;
+  };
 
-    // 逐层追溯引用链，直到达到层数上限或无法继续
-    const seenIds = new Set<string>();
-    let cursorId: string | null = replyId;
-    let firstRepliedMsg: any | null = null;
+  // 逐层追溯引用链，直到达到层数上限或无法继续
+  const seenIds = new Set<string>();
+  let cursorId: string | null = replyId;
+  let firstRepliedMsg: any | null = null;
 
-    for (let layer = 1; layer <= maxReplyLayers && cursorId; layer++) {
-        if (seenIds.has(cursorId)) break;
-        seenIds.add(cursorId);
+  for (let layer = 1; layer <= maxReplyLayers && cursorId; layer++) {
+    if (seenIds.has(cursorId)) break;
+    seenIds.add(cursorId);
 
-        try {
-            const msg = await fetchNapCatMsg(cursorId, config);
-            if (!msg) break;
+    try {
+      const msg = await fetchNapCatMsg(cursorId, config);
+      if (!msg) break;
 
-            if (layer === 1) firstRepliedMsg = msg;
+      if (layer === 1) firstRepliedMsg = msg;
 
-            const senderName = msg?.sender?.nickname || msg?.sender?.card || msg?.user_id || "unknown";
-            const rawMsg = Array.isArray(msg?.message)
-                ? msg.message
-                : msg?.raw_message || "";
+      const senderName =
+        msg?.sender?.card || msg?.sender?.nickname || msg?.user_id || "unknown";
+      const rawMsg = Array.isArray(msg?.message)
+        ? msg.message
+        : msg?.raw_message || "";
 
-            // 将消息段渲染为纯文本，非文本类型用方括号标签表示
-            const textContent = Array.isArray(rawMsg)
-                ? normalizeRenderedMessageText(
-                    rawMsg
-                        .map((seg: any) => {
-                            const t = String(seg?.type || "").toLowerCase();
-                            const data = seg?.data || {};
-                            if (t === "text") return data.text || "";
-                            if (t === "image") return "[图片]";
-                            if (t === "record") return "[语音]";
-                            if (t === "video") return "[视频]";
-                            if (t === "file") return `[文件:${data.name || data.file || "未命名"}]`;
-                            if (t === "face") return "[表情]";
-                            if (t === "forward") return "[合并转发]";
-                            if (t === "reply") return "";
-                            return "";
-                        })
-                        .filter(Boolean)
-                        .join(" ")
-                  )
-                : normalizeRenderedMessageText(String(rawMsg || ""));
+      // 将消息段渲染为纯文本，非文本类型用方括号标签表示
+      const textContent = Array.isArray(rawMsg)
+        ? normalizeRenderedMessageText(
+            rawMsg
+              .map((seg: any) => {
+                const t = String(seg?.type || "").toLowerCase();
+                const data = seg?.data || {};
+                if (t === "text") return data.text || "";
+                if (t === "image") return "[图片]";
+                if (t === "record") return "[语音]";
+                if (t === "video") return "[视频]";
+                if (t === "file")
+                  return `[文件:${data.name || data.file || "未命名"}]`;
+                if (t === "face") return "[表情]";
+                if (t === "forward") return "[合并转发]";
+                if (t === "reply") return "";
+                return "";
+              })
+              .filter(Boolean)
+              .join(" "),
+          )
+        : normalizeRenderedMessageText(String(rawMsg || ""));
 
-            const maxContent = maxCharsPerLayer;
-            const content = textContent.length > maxContent
-                ? `${textContent.slice(0, Math.max(0, maxContent - 1))}…`
-                : textContent;
+      const maxContent = maxCharsPerLayer;
+      const content =
+        textContent.length > maxContent
+          ? `${textContent.slice(0, Math.max(0, maxContent - 1))}…`
+          : textContent;
 
-            const prefix = includeSender
-                ? `[Layer ${layer}][reply][from:${senderName}]`
-                : `[Layer ${layer}][reply]`;
-            pushLine(`${prefix} ${content || "(空文本)"}`);
+      const prefix = includeSender
+        ? `[Layer ${layer}][reply][from:${senderName}]`
+        : `[Layer ${layer}][reply]`;
+      pushLine(`${prefix} ${content || "(空文本)"}`);
 
-            // 检查被引用消息本身是否也引用了其他消息，继续追溯
-            const nextSegments = extractNapCatMessageSegments(msg?.message);
-            cursorId = nextSegments.length > 0
-                ? getNapCatReplyMessageId(nextSegments)
-                : null;
-        } catch {
-            break;
-        }
+      // 检查被引用消息本身是否也引用了其他消息，继续追溯
+      const nextSegments = extractNapCatMessageSegments(msg?.message);
+      cursorId =
+        nextSegments.length > 0 ? getNapCatReplyMessageId(nextSegments) : null;
+    } catch {
+      break;
     }
+  }
 
-    if (lines.length === 0) {
-        console.log(`[NapCat] reply context: found replyId=${replyId} but no content resolved`);
-        return { block: "", repliedMsg: null, replyId: null };
-    }
+  if (lines.length === 0) {
+    console.log(
+      `[NapCat] reply context: found replyId=${replyId} but no content resolved`,
+    );
+    return { block: "", repliedMsg: null, replyId: null };
+  }
 
-    console.log(`[NapCat] reply context: resolved ${lines.length} layers for replyId=${replyId}`);
-    return {
-        block: `<context_layers>\n${lines.join("\n")}\n</context_layers>\n\n`,
-        repliedMsg: firstRepliedMsg,
-        replyId,
-    };
+  console.log(
+    `[NapCat] reply context: resolved ${lines.length} layers for replyId=${replyId}`,
+  );
+  return {
+    block: `<context_layers>\n${lines.join("\n")}\n</context_layers>\n\n`,
+    repliedMsg: firstRepliedMsg,
+    replyId,
+  };
 }
 
 async function renderNapCatSegmentsToText(
-    segments: any[],
-    config: any,
-    cache: Map<string, any[] | null>,
-    depth = 0
+  segments: any[],
+  config: any,
+  cache: Map<string, any[] | null>,
+  depth = 0,
 ): Promise<string> {
-    if (!Array.isArray(segments) || segments.length === 0) return "";
-    if (depth > 3) return "[合并转发嵌套过深]";
+  if (!Array.isArray(segments) || segments.length === 0) return "";
+  if (depth > 3) return "[合并转发嵌套过深]";
 
-    let output = "";
-    for (const segment of segments) {
-        output += await renderNapCatSegmentToText(segment, config, cache, depth);
-    }
-    return normalizeRenderedMessageText(output);
+  let output = "";
+  for (const segment of segments) {
+    output += await renderNapCatSegmentToText(segment, config, cache, depth);
+  }
+  return normalizeRenderedMessageText(output);
 }
 
 async function renderNapCatForwardNode(
-    node: any,
-    config: any,
-    cache: Map<string, any[] | null>,
-    depth: number
+  node: any,
+  config: any,
+  cache: Map<string, any[] | null>,
+  depth: number,
 ): Promise<string> {
-    const rawNode = node?.data && typeof node.data === "object" ? node.data : node;
-    const senderName = String(
-        rawNode?.nickname ||
-        rawNode?.name ||
-        rawNode?.sender?.nickname ||
-        rawNode?.user_name ||
-        rawNode?.user_id ||
-        "未知发送者"
-    ).trim();
+  const rawNode =
+    node?.data && typeof node.data === "object" ? node.data : node;
+  const senderName = String(
+    rawNode?.nickname ||
+      rawNode?.name ||
+      rawNode?.sender?.nickname ||
+      rawNode?.user_name ||
+      rawNode?.user_id ||
+      "未知发送者",
+  ).trim();
 
-    let contentText = "";
-    const contentSegments = extractNapCatMessageSegments(
-        rawNode?.content ?? rawNode?.message ?? rawNode?.messages
+  let contentText = "";
+  const contentSegments = extractNapCatMessageSegments(
+    rawNode?.content ?? rawNode?.message ?? rawNode?.messages,
+  );
+  if (contentSegments.length > 0) {
+    contentText = await renderNapCatSegmentsToText(
+      contentSegments,
+      config,
+      cache,
+      depth + 1,
     );
-    if (contentSegments.length > 0) {
-        contentText = await renderNapCatSegmentsToText(contentSegments, config, cache, depth + 1);
-    } else if (typeof rawNode?.content === "string") {
-        contentText = normalizeRenderedMessageText(rawNode.content);
-    } else if (typeof rawNode?.message === "string") {
-        contentText = normalizeRenderedMessageText(rawNode.message);
-    } else if (typeof rawNode?.raw_message === "string") {
-        contentText = normalizeRenderedMessageText(rawNode.raw_message);
-    }
+  } else if (typeof rawNode?.content === "string") {
+    contentText = normalizeRenderedMessageText(rawNode.content);
+  } else if (typeof rawNode?.message === "string") {
+    contentText = normalizeRenderedMessageText(rawNode.message);
+  } else if (typeof rawNode?.raw_message === "string") {
+    contentText = normalizeRenderedMessageText(rawNode.raw_message);
+  }
 
-    return `${senderName}: ${contentText || "[空消息]"}`;
+  return `${senderName}: ${contentText || "[空消息]"}`;
 }
 
 async function renderNapCatForwardEntries(
-    entries: any[],
-    config: any,
-    cache: Map<string, any[] | null>,
-    depth: number
+  entries: any[],
+  config: any,
+  cache: Map<string, any[] | null>,
+  depth: number,
 ): Promise<string> {
-    if (!Array.isArray(entries) || entries.length === 0) {
-        return "[合并转发]\n[未能读取转发内容]";
-    }
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return "[合并转发]\n[未能读取转发内容]";
+  }
 
-    const lines: string[] = ["[合并转发]"];
-    for (const entry of entries) {
-        lines.push(await renderNapCatForwardNode(entry, config, cache, depth + 1));
-    }
-    return lines.join("\n");
+  const lines: string[] = ["[合并转发]"];
+  for (const entry of entries) {
+    lines.push(await renderNapCatForwardNode(entry, config, cache, depth + 1));
+  }
+  return lines.join("\n");
 }
 
 async function renderNapCatSegmentToText(
-    segment: any,
-    config: any,
-    cache: Map<string, any[] | null>,
-    depth: number
+  segment: any,
+  config: any,
+  cache: Map<string, any[] | null>,
+  depth: number,
 ): Promise<string> {
-    const type = String(segment?.type || "").trim().toLowerCase();
-    const data = segment?.data && typeof segment.data === "object" ? segment.data : {};
+  const type = String(segment?.type || "")
+    .trim()
+    .toLowerCase();
+  const data =
+    segment?.data && typeof segment.data === "object" ? segment.data : {};
 
-    switch (type) {
-        case "text":
-            return String(data.text || "");
-        case "at":
-            return data.qq === "all" ? "@全体成员" : `@${String(data.qq || "").trim()}`;
-        case "face":
-            return formatInlineSegmentLabel("表情", String(data.summary || data.id || "").trim());
-        case "image":
-        case "mface":
-            return formatInlineSegmentLabel("图片", String(data.summary || data.name || "").trim());
-        case "record":
-            return formatInlineSegmentLabel("语音", String(data.name || "").trim());
-        case "video":
-            return formatInlineSegmentLabel("视频", String(data.name || "").trim());
-        case "file":
-            return formatInlineSegmentLabel("文件", String(data.name || data.file || "").trim());
-        case "reply":
-            return formatInlineSegmentLabel("回复", String(data.id || "").trim());
-        case "json":
-            return "[JSON消息]";
-        case "markdown":
-            return String(data.content || data.markdown || "[Markdown消息]");
-        case "contact":
-            return formatInlineSegmentLabel("名片", String(data.id || data.type || "").trim());
-        case "location":
-            return formatInlineSegmentLabel("位置", String(data.title || data.address || "").trim());
-        case "music":
-            return formatInlineSegmentLabel("音乐", String(data.title || data.id || data.type || "").trim());
-        case "share":
-            return formatInlineSegmentLabel("分享", String(data.title || data.url || "").trim());
-        case "lightapp":
-            return "[小程序卡片]";
-        case "forward": {
-            const inlineEntries = extractForwardEntries(data);
-            const forwardId = String(data.id || "").trim();
-            const entries = inlineEntries.length > 0
-                ? inlineEntries
-                : await fetchNapCatForwardEntries(forwardId, config, cache);
-            if (!entries || entries.length === 0) {
-                return forwardId ? `[合并转发:${forwardId}]` : "[合并转发]";
-            }
-            return `\n${await renderNapCatForwardEntries(entries, config, cache, depth)}\n`;
-        }
-        default:
-            return type ? `[${type}]` : "";
+  switch (type) {
+    case "text":
+      return String(data.text || "");
+    case "at":
+      return data.qq === "all"
+        ? "@全体成员"
+        : `@${String(data.qq || "").trim()}`;
+    case "face":
+      return formatInlineSegmentLabel(
+        "表情",
+        String(data.summary || data.id || "").trim(),
+      );
+    case "image":
+    case "mface":
+      return formatInlineSegmentLabel(
+        "图片",
+        String(data.summary || data.name || "").trim(),
+      );
+    case "record":
+      return formatInlineSegmentLabel("语音", String(data.name || "").trim());
+    case "video":
+      return formatInlineSegmentLabel("视频", String(data.name || "").trim());
+    case "file":
+      return formatInlineSegmentLabel(
+        "文件",
+        String(data.name || data.file || "").trim(),
+      );
+    case "reply":
+      return formatInlineSegmentLabel("回复", String(data.id || "").trim());
+    case "json":
+      return "[JSON消息]";
+    case "markdown":
+      return String(data.content || data.markdown || "[Markdown消息]");
+    case "contact":
+      return formatInlineSegmentLabel(
+        "名片",
+        String(data.id || data.type || "").trim(),
+      );
+    case "location":
+      return formatInlineSegmentLabel(
+        "位置",
+        String(data.title || data.address || "").trim(),
+      );
+    case "music":
+      return formatInlineSegmentLabel(
+        "音乐",
+        String(data.title || data.id || data.type || "").trim(),
+      );
+    case "share":
+      return formatInlineSegmentLabel(
+        "分享",
+        String(data.title || data.url || "").trim(),
+      );
+    case "lightapp":
+      return "[小程序卡片]";
+    case "forward": {
+      const inlineEntries = extractForwardEntries(data);
+      const forwardId = String(data.id || "").trim();
+      const entries =
+        inlineEntries.length > 0
+          ? inlineEntries
+          : await fetchNapCatForwardEntries(forwardId, config, cache);
+      if (!entries || entries.length === 0) {
+        return forwardId ? `[合并转发:${forwardId}]` : "[合并转发]";
+      }
+      return `\n${await renderNapCatForwardEntries(entries, config, cache, depth)}\n`;
     }
+    default:
+      return type ? `[${type}]` : "";
+  }
 }
 
-async function buildInboundMessageText(event: any, config: any): Promise<string> {
-    const segments = extractNapCatMessageSegments(event?.message);
-    if (segments.length === 0) {
-        return normalizeRenderedMessageText(String(event?.raw_message || ""));
-    }
+async function buildInboundMessageText(
+  event: any,
+  config: any,
+): Promise<string> {
+  const segments = extractNapCatMessageSegments(event?.message);
+  if (segments.length === 0) {
+    return normalizeRenderedMessageText(String(event?.raw_message || ""));
+  }
 
-    const cache = new Map<string, any[] | null>();
-    const rendered = await renderNapCatSegmentsToText(segments, config, cache);
-    return rendered || normalizeRenderedMessageText(String(event?.raw_message || ""));
+  const cache = new Map<string, any[] | null>();
+  const rendered = await renderNapCatSegmentsToText(segments, config, cache);
+  return (
+    rendered || normalizeRenderedMessageText(String(event?.raw_message || ""))
+  );
 }
 
 function getInboundLogFilePath(body: any, config: any): string {
-    const isGroup = body?.message_type === "group";
-    const baseDirRaw = String(config.inboundLogDir || "./logs/napcat-inbound").trim() || "./logs/napcat-inbound";
-    const baseDir = resolve(baseDirRaw);
-    if (isGroup) {
-        const groupId = sanitizeLogToken(String(body?.group_id || "unknown_group"));
-        return resolve(baseDir, `group-${groupId}.log`);
-    }
-    const userId = sanitizeLogToken(String(body?.user_id || "unknown_user"));
-    return resolve(baseDir, `qq-${userId}.log`);
+  const isGroup = body?.message_type === "group";
+  const baseDirRaw =
+    String(config.inboundLogDir || "./logs/napcat-inbound").trim() ||
+    "./logs/napcat-inbound";
+  const baseDir = resolve(baseDirRaw);
+  if (isGroup) {
+    const groupId = sanitizeLogToken(String(body?.group_id || "unknown_group"));
+    return resolve(baseDir, `group-${groupId}.log`);
+  }
+  const userId = sanitizeLogToken(String(body?.user_id || "unknown_user"));
+  return resolve(baseDir, `qq-${userId}.log`);
 }
 
 async function logInboundMessage(body: any, config: any): Promise<void> {
-    if (config.enableInboundLogging === false) return;
-    if (body?.post_type !== "message" && body?.post_type !== "message_sent") return;
+  if (config.enableInboundLogging === false) return;
+  if (body?.post_type !== "message" && body?.post_type !== "message_sent")
+    return;
 
-    const filePath = getInboundLogFilePath(body, config);
-    const line = JSON.stringify({
-        ts: new Date().toISOString(),
-        post_type: body.post_type,
-        message_type: body.message_type,
-        self_id: body.self_id,
-        user_id: body.user_id,
-        group_id: body.group_id,
-        message_id: body.message_id,
-        raw_message: body.raw_message || "",
-        sender: body.sender || {},
+  const filePath = getInboundLogFilePath(body, config);
+  const line =
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      post_type: body.post_type,
+      message_type: body.message_type,
+      self_id: body.self_id,
+      user_id: body.user_id,
+      group_id: body.group_id,
+      message_id: body.message_id,
+      raw_message: body.raw_message || "",
+      sender: body.sender || {},
     }) + "\n";
 
-    await mkdir(dirname(filePath), { recursive: true });
-    await appendFile(filePath, line, "utf8");
+  await mkdir(dirname(filePath), { recursive: true });
+  await appendFile(filePath, line, "utf8");
 }
 
-async function logInboundParseFailure(rawBody: string, config: any): Promise<void> {
-    if (config.enableInboundLogging === false) return;
-    const baseDirRaw = String(config.inboundLogDir || "./logs/napcat-inbound").trim() || "./logs/napcat-inbound";
-    const filePath = resolve(baseDirRaw, "parse-error.log");
-    const line = JSON.stringify({
-        ts: new Date().toISOString(),
-        kind: "parse_error",
-        raw_body: rawBody,
+async function logInboundParseFailure(
+  rawBody: string,
+  config: any,
+): Promise<void> {
+  if (config.enableInboundLogging === false) return;
+  const baseDirRaw =
+    String(config.inboundLogDir || "./logs/napcat-inbound").trim() ||
+    "./logs/napcat-inbound";
+  const filePath = resolve(baseDirRaw, "parse-error.log");
+  const line =
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      kind: "parse_error",
+      raw_body: rawBody,
     }) + "\n";
-    await mkdir(dirname(filePath), { recursive: true });
-    await appendFile(filePath, line, "utf8");
+  await mkdir(dirname(filePath), { recursive: true });
+  await appendFile(filePath, line, "utf8");
 }
 
 function extractNapCatEvents(body: any): any[] {
-    if (!body || typeof body !== "object") return [];
-    if (Array.isArray(body)) return body.filter((item) => item && typeof item === "object");
-    if (body.post_type) return [body];
-    if (Array.isArray(body.events)) return body.events.filter((item: any) => item && typeof item === "object");
-    if (Array.isArray(body.data)) return body.data.filter((item: any) => item && typeof item === "object");
-    if (body.data && typeof body.data === "object") return [body.data];
-    if (body.payload && typeof body.payload === "object") return [body.payload];
-    return [];
+  if (!body || typeof body !== "object") return [];
+  if (Array.isArray(body))
+    return body.filter((item) => item && typeof item === "object");
+  if (body.post_type) return [body];
+  if (Array.isArray(body.events))
+    return body.events.filter((item: any) => item && typeof item === "object");
+  if (Array.isArray(body.data))
+    return body.data.filter((item: any) => item && typeof item === "object");
+  if (body.data && typeof body.data === "object") return [body.data];
+  if (body.payload && typeof body.payload === "object") return [body.payload];
+  return [];
 }
 
-export async function handleNapCatWebhook(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    const url = req.url || "";
-    const method = req.method || "UNKNOWN";
-    
-    console.log(`[NapCat] Incoming request: ${method} ${url}`);
-    
-    // Accept /napcat, /napcat/, or any path starting with /napcat
-    if (!url.startsWith("/napcat")) return false;
+export async function handleNapCatWebhook(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  const url = req.url || "";
+  const method = req.method || "UNKNOWN";
 
-    if (method === "GET") {
-        return handleMediaProxyRequest(res, url);
-    }
-    
-    if (method !== "POST") {
-        // For non-POST requests to /napcat endpoints, return 405
-        res.statusCode = 405;
-        res.setHeader("Content-Type", "application/json");
-        res.end('{"status":"error","message":"Method Not Allowed"}');
-        return true;
-    }
+  console.log(`[NapCat] Incoming request: ${method} ${url}`);
+
+  // Accept /napcat, /napcat/, or any path starting with /napcat
+  if (!url.startsWith("/napcat")) return false;
+
+  if (method === "GET") {
+    return handleMediaProxyRequest(res, url);
+  }
+
+  if (method !== "POST") {
+    // For non-POST requests to /napcat endpoints, return 405
+    res.statusCode = 405;
+    res.setHeader("Content-Type", "application/json");
+    res.end('{"status":"error","message":"Method Not Allowed"}');
+    return true;
+  }
+
+  try {
+    const body = await readBody(req);
+    const config = getNapCatConfig();
+
+    // Note: Token verification for incoming requests from NapCat is not implemented
+    // because NapCat's HTTP client does not support custom Authorization headers.
+    // The token is only used when OpenClaw sends messages TO NapCat.
+
+    const events = extractNapCatEvents(body);
 
     try {
-        const body = await readBody(req);
-        const config = getNapCatConfig();
+      if (
+        body?.__parseError &&
+        typeof body.__raw === "string" &&
+        body.__raw.trim()
+      ) {
+        await logInboundParseFailure(body.__raw, config);
+      }
+      for (const event of events) {
+        await logInboundMessage(event, config);
+      }
+    } catch (err) {
+      console.error("[NapCat] Failed to write inbound log:", err);
+    }
 
-        // Note: Token verification for incoming requests from NapCat is not implemented
-        // because NapCat's HTTP client does not support custom Authorization headers.
-        // The token is only used when OpenClaw sends messages TO NapCat.
+    const event = events[0] || body;
 
-        const events = extractNapCatEvents(body);
+    // Heartbeat / Lifecycle
+    if (event.post_type === "meta_event") {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end('{"status":"ok"}');
+      return true;
+    }
 
-        try {
-            if (body?.__parseError && typeof body.__raw === "string" && body.__raw.trim()) {
-                await logInboundParseFailure(body.__raw, config);
-            }
-            for (const event of events) {
-                await logInboundMessage(event, config);
-            }
-        } catch (err) {
-            console.error("[NapCat] Failed to write inbound log:", err);
-        }
+    if (event.post_type === "message") {
+      const runtime = getNapCatRuntime();
+      const isGroup = event.message_type === "group";
+      const groupId = isGroup ? String(event.group_id || "") : "";
+      // Ensure senderId is numeric string
+      const senderId = String(event.user_id);
+      // Safety check: if senderId looks like a name (non-numeric), log warning
+      if (!/^\d+$/.test(senderId)) {
+        console.warn(`[NapCat] WARNING: user_id is not numeric: ${senderId}`);
+      }
+      const rawText = event.raw_message || "";
+      let text = await buildInboundMessageText(event, config);
 
-        const event = events[0] || body;
+      // Get allowUsers from config
+      const allowUsers = config.allowUsers || [];
+      const isAllowUser = allowUsers.includes(senderId);
 
-        // Heartbeat / Lifecycle
-        if (event.post_type === "meta_event") {
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json");
-            res.end('{"status":"ok"}');
-            return true;
-        }
-
-        if (event.post_type === "message") {
-            const runtime = getNapCatRuntime();
-            const isGroup = event.message_type === "group";
-            const groupId = isGroup ? String(event.group_id || "") : "";
-            // Ensure senderId is numeric string
-            const senderId = String(event.user_id);
-            // Safety check: if senderId looks like a name (non-numeric), log warning
-            if (!/^\d+$/.test(senderId)) {
-                console.warn(`[NapCat] WARNING: user_id is not numeric: ${senderId}`);
-            }
-            const rawText = event.raw_message || "";
-            let text = await buildInboundMessageText(event, config);
-
-            // Get allowUsers from config
-            const allowUsers = config.allowUsers || [];
-            const isAllowUser = allowUsers.includes(senderId);
-
-            // Check allowlist logic
-            // If allowUsers is configured, only listed users should trigger the bot.
-            // This applies to both DMs and Group chats.
-            if (allowUsers.length > 0 && !isAllowUser) {
-                console.log(`[NapCat] Ignoring message from ${senderId} (not in allowlist)`);
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "application/json");
-                res.end('{"status":"ok"}');
-                return true;
-            }
-
-            // Group message handling
-            const enableGroupMessages = config.enableGroupMessages || false;
-            const groupMentionOnly = config.groupMentionOnly !== false; // Default true
-            const groupKeywords = Array.isArray(config.groupKeywords)
-                ? config.groupKeywords.filter((k: any) => k && typeof k === "string").map((k: string) => k.trim().toLowerCase())
-                : [];
-            const groupWhitelist = Array.isArray(config.groupWhitelist)
-                ? config.groupWhitelist.map((id: any) => String(id).trim()).filter(Boolean)
-                : [];
-            let wasMentioned = !isGroup; // In DMs, we consider it "mentioned"
-
-            if (isGroup) {
-                if (!enableGroupMessages) {
-                    // Group messages disabled - ignore
-                    console.log(`[NapCat] Ignoring group message (group messages disabled)`);
-                    res.statusCode = 200;
-                    res.setHeader("Content-Type", "application/json");
-                    res.end('{"status":"ok"}');
-                    return true;
-                }
-
-                if (groupWhitelist.length > 0 && !groupWhitelist.includes(groupId)) {
-                    console.log(`[NapCat] Ignoring group message from ${groupId} (not in group whitelist)`);
-                    res.statusCode = 200;
-                    res.setHeader("Content-Type", "application/json");
-                    res.end('{"status":"ok"}');
-                    return true;
-                }
-
-                const botId = event.self_id || config.selfId;
-                if (groupMentionOnly) {
-                    // Check if bot was mentioned
-                    // NapCat sends self_id as the bot's QQ number
-                    if (!botId) {
-                        console.log(`[NapCat] Cannot determine bot ID, ignoring group message`);
-                        res.statusCode = 200;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end('{"status":"ok"}');
-                        return true;
-                    }
-
-                    // Check for bot mention in raw_message
-                    // Support two formats:
-                    // 1. CQ code format: [CQ:at,qq={botId}] or [CQ:at,qq=all]
-                    // 2. Plain text format: @Nickname (botId) or @botId
-                    const mentionPatternCQ = new RegExp(`\\[CQ:at,qq=${botId}\\]`, 'i');
-                    const allMentionPatternCQ = /\[CQ:at,qq=all\]/i;
-                    
-                    // Plain text mention patterns: @xxx (123456) or @123456
-                    const mentionPatternPlain1 = new RegExp(`@[^\\s]+ \\(${botId}\\)`, 'i');
-                    const mentionPatternPlain2 = new RegExp(`@${botId}(?:\\s|$|,)`, 'i');
-
-                    const mentionSource = rawText || text;
-                    const isMentionedCQ = mentionPatternCQ.test(mentionSource) || allMentionPatternCQ.test(mentionSource);
-                    const isMentionedPlain = mentionPatternPlain1.test(text) || mentionPatternPlain2.test(text);
-
-                    // Check keyword triggers: if message contains any configured keyword, respond without @mention
-                    const hasKeywordTrigger = groupKeywords.length > 0 &&
-                        groupKeywords.some((kw: string) => text.toLowerCase().includes(kw));
-
-                    if (!isMentionedCQ && !isMentionedPlain && !hasKeywordTrigger) {
-                        console.log(`[NapCat] Ignoring group message (bot not mentioned)`);
-                        res.statusCode = 200;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end('{"status":"ok"}');
-                        return true;
-                    }
-
-                    wasMentioned = true;
-                    if (hasKeywordTrigger) {
-                        console.log(`[NapCat] Group message matched keyword trigger, processing`);
-                    } else {
-                        console.log(`[NapCat] Bot mentioned in group, processing message`);
-                    }
-                } else {
-                    // Check for mention anyway to update wasMentioned
-                    if (botId) {
-                        const mentionPatternCQ = new RegExp(`\\[CQ:at,qq=${botId}\\]`, 'i');
-                        const allMentionPatternCQ = /\[CQ:at,qq=all\]/i;
-                        const mentionPatternPlain1 = new RegExp(`@[^\\s]+ \\(${botId}\\)`, 'i');
-                        const mentionPatternPlain2 = new RegExp(`@${botId}(?:\\s|$|,)`, 'i');
-                        const mentionSource = rawText || text;
-                        wasMentioned = mentionPatternCQ.test(mentionSource) || allMentionPatternCQ.test(mentionSource) || 
-                                       mentionPatternPlain1.test(text) || mentionPatternPlain2.test(text);
-                    }
-                    // Also check keyword triggers
-                    if (!wasMentioned && groupKeywords.length > 0) {
-                        wasMentioned = groupKeywords.some((kw: string) => text.toLowerCase().includes(kw));
-                    }
-                }
-
-                // Strip mentions from text for cleaner processing and command detection
-                if (botId) {
-                    const stripCQ = new RegExp(`^\\[CQ:at,qq=${botId}\\]\\s*`, 'i');
-                    const stripAll = /^\[CQ:at,qq=all\]\s*/i;
-                    const stripAllPlain = /^@全体成员\s*/i;
-                    const stripPlain1 = new RegExp(`^@[^\\s]+ \\(${botId}\\)\\s*`, 'i');
-                    const stripPlain2 = new RegExp(`^@${botId}(?:\\s|$|,)\\s*`, 'i');
-                    text = text
-                        .replace(stripCQ, '')
-                        .replace(stripAll, '')
-                        .replace(stripAllPlain, '')
-                        .replace(stripPlain1, '')
-                        .replace(stripPlain2, '')
-                        .trim();
-                }
-            }
-
-            const messageId = String(event.message_id);
-            // OpenClaw convention: conversationId differentiates chats
-            // We prefix with type to help outbound routing
-            const conversationId = isGroup ? `group:${event.group_id}` : `private:${senderId}`;
-            const senderName = event.sender?.nickname || senderId;
-
-            // Generate NapCat base session key by conversation type
-            // Base format: session:napcat:private:{userId} or session:napcat:group:{groupId}
-            const baseSessionKey = isGroup 
-                ? `session:napcat:group:${event.group_id}`
-                : `session:napcat:private:${senderId}`;
-            const cfg = runtime.config?.loadConfig?.() || {};
-            const peer = isGroup
-                ? { kind: "group", id: String(event.group_id) }
-                : { kind: "direct", id: senderId };
-
-            // Resolve route for this message with specific session key
-            // Note: OpenClaw SDK ignores the sessionKey param, so we must override it after
-            const route = await runtime.channel.routing.resolveAgentRoute({
-                channel: "napcat",
-                conversationId,
-                senderId,
-                text,
-                cfg,
-                ctx: {},
-                peer,
-            });
-
-            if (!route?.agentId) {
-                console.log("[NapCat] No route found for message, ignoring");
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "application/json");
-                res.end('{"status":"ok"}');
-                return true;
-            }
-
-            const configuredAgentId = String(config.agentId || "").trim().toLowerCase();
-            const routeAgentId = String(route.agentId || "").trim().toLowerCase();
-            const effectiveAgentId = routeAgentId || configuredAgentId || "main";
-            const sessionKey = `agent:${effectiveAgentId}:${baseSessionKey}`;
-
-            // User requested to use session key as display name for consistency
-            const sessionDisplayName = sessionKey;
-
-            // Log for debugging
-            console.log(`[NapCat] Inbound from ${senderId} (session: ${sessionKey}): ${text.substring(0, 50)}...`);
-            if (configuredAgentId && configuredAgentId !== routeAgentId) {
-                console.log(`[NapCat] Route agent (${routeAgentId || "none"}) differs from configured agent (${configuredAgentId}); route takes precedence`);
-            }
-
-            // Force our custom session key and configured agent
-            route.agentId = effectiveAgentId;
-            route.sessionKey = sessionKey;
-
-            // 获取引用消息的上下文（逐层追溯引用链）
-            const replyContext = await buildNapCatReplyContextBlock({ event, config });
-            let replyContextBlock = "";
-            let replyToId: string | undefined;
-            let replyToBody: string | undefined;
-            let replyToSender: string | undefined;
-            if (replyContext.block && replyContext.repliedMsg) {
-                replyContextBlock = replyContext.block;
-                replyToId = String(replyContext.replyId || "");
-                const replied = replyContext.repliedMsg;
-                // 将被引用的原始消息渲染为纯文本
-                replyToBody = Array.isArray(replied.message)
-                    ? normalizeRenderedMessageText(
-                        replied.message
-                            .map((seg: any) => {
-                                const t = String(seg?.type || "").toLowerCase();
-                                const data = seg?.data || {};
-                                if (t === "text") return data.text || "";
-                                if (t === "image") return "[图片]";
-                                if (t === "record") return "[语音]";
-                                if (t === "video") return "[视频]";
-                                if (t === "file") return `[文件:${data.name || data.file || "未命名"}]`;
-                                if (t === "face") return "[表情]";
-                                if (t === "forward") return "[合并转发]";
-                                if (t === "reply") return "";
-                                return "";
-                            })
-                            .filter(Boolean)
-                            .join(" ")
-                      )
-                    : normalizeRenderedMessageText(String(replied.raw_message || ""));
-                replyToSender = replied.sender?.nickname || replied.sender?.card || String(replied.sender?.user_id || "");
-            }
-
-            // 将引用上下文块注入到消息正文前面，智能体能看到引用的历史消息
-            const bodyWithReplyContext = replyContextBlock
-                ? `${replyContextBlock}${text}`
-                : text;
-
-            // Build ctxPayload using runtime methods
-            const ctxPayload: Record<string, unknown> = {
-                Body: bodyWithReplyContext,
-                RawBody: rawText,
-                CommandBody: bodyWithReplyContext,
-                From: `napcat:${conversationId}`,
-                To: "me",
-                SessionKey: sessionKey,  // Use our custom session key
-                SessionDisplayName: sessionDisplayName,
-                displayName: sessionDisplayName,
-                name: sessionDisplayName,
-                Title: sessionDisplayName,
-                ConversationTitle: sessionDisplayName,
-                Topic: sessionDisplayName,
-                Subject: sessionDisplayName,
-                AccountId: route.accountId,
-                ChatType: isGroup ? "group" : "direct",
-                ConversationLabel: sessionKey,
-                SenderName: senderName,
-                SenderId: senderId,
-                Provider: "napcat",
-                Surface: "napcat",
-                MessageSid: messageId,
-                WasMentioned: wasMentioned,
-                CommandAuthorized: true,
-                OriginatingChannel: "napcat",
-                OriginatingTo: conversationId,
-            };
-            if (replyToId) ctxPayload.ReplyToId = replyToId;
-            if (replyToBody) ctxPayload.ReplyToBody = replyToBody;
-            if (replyToSender) ctxPayload.ReplyToSender = replyToSender;
-
-            // Create dispatcher for replies
-            let dispatcher = null;
-            let dispatcherReplyOptions: Record<string, unknown> = {};
-            let markDispatchIdle: (() => void) | null = null;
-            
-            const typingController = createPrivateTypingStatusController({
-                enabled: !isGroup && isNapCatPrivateTypingEnabled(config),
-                userId: senderId,
-                token: String(config.token || "").trim(),
-            });
-            
-            if (runtime.channel.reply.createReplyDispatcherWithTyping) {
-                console.log("[NapCat] Calling createReplyDispatcherWithTyping...");
-                const result = await runtime.channel.reply.createReplyDispatcherWithTyping({
-                    responsePrefix: "",
-                    responsePrefixContextProvider: () => ({}),
-                    humanDelay: 0,
-                    deliver: async (payload) => {
-                        typingController.stop();
-                        console.log("[NapCat] Reply to deliver:", JSON.stringify(payload).substring(0, 100));
-                        // Actually send the message via NapCat API
-                        const config = getNapCatConfig();
-                        const baseUrl = config.url || "http://127.0.0.1:15150";
-                        const token = String(config.token || "").trim();
-                        const isGroup = conversationId.startsWith("group:");
-                        const targetId = isGroup ? conversationId.replace("group:", "") : conversationId.replace("private:", "");
-                        const endpoint = isGroup ? "/send_group_msg" : "/send_private_msg";
-                        const message = await buildNapCatMessageFromReply(payload, config);
-                        if (!message) {
-                            console.log("[NapCat] Skip empty reply payload");
-                            return;
-                        }
-                        const msgPayload: Record<string, string> = { message };
-                        if (isGroup) msgPayload.group_id = targetId;
-                        else msgPayload.user_id = targetId;
-                        
-                        console.log(`[NapCat] Sending reply to ${isGroup ? 'group' : 'private'} ${targetId}: ${message.substring(0, 50)}...`);
-                        try {
-                            await sendToNapCat(`${baseUrl}${endpoint}`, msgPayload, token);
-                            console.log("[NapCat] Reply sent successfully");
-                        } catch (err) {
-                            console.error("[NapCat] Reply delivery failed (suppressed to avoid channel crash):", err);
-                        }
-                    },
-                    onError: (err, info) => {
-                        typingController.stop();
-                        console.error(`[NapCat] Reply error (${info.kind}):`, err);
-                    },
-                    onReplyStart: () => {
-                        typingController.stop();
-                    },
-                    onIdle: () => {
-                        typingController.stop();
-                    },
-                });
-                dispatcher = result.dispatcher;
-                dispatcherReplyOptions = result.replyOptions || {};
-                markDispatchIdle = result.markDispatchIdle || null;
-            } else if (runtime.channel.reply.createReplyDispatcher) {
-                dispatcher = runtime.channel.reply.createReplyDispatcher({
-                    responsePrefix: "",
-                    responsePrefixContextProvider: () => ({}),
-                    humanDelay: 0,
-                    deliver: async (payload) => {
-                        typingController.stop();
-                        console.log("[NapCat] Reply to deliver:", JSON.stringify(payload).substring(0, 100));
-                        // Actually send the message via NapCat API
-                        const config = getNapCatConfig();
-                        const baseUrl = config.url || "http://127.0.0.1:15150";
-                        const token = String(config.token || "").trim();
-                        const isGroup = conversationId.startsWith("group:");
-                        const targetId = isGroup ? conversationId.replace("group:", "") : conversationId.replace("private:", "");
-                        const endpoint = isGroup ? "/send_group_msg" : "/send_private_msg";
-                        const message = await buildNapCatMessageFromReply(payload, config);
-                        if (!message) {
-                            console.log("[NapCat] Skip empty reply payload");
-                            return;
-                        }
-                        const msgPayload: Record<string, string> = { message };
-                        if (isGroup) msgPayload.group_id = targetId;
-                        else msgPayload.user_id = targetId;
-                        
-                        console.log(`[NapCat] Sending reply to ${isGroup ? 'group' : 'private'} ${targetId}: ${message.substring(0, 50)}...`);
-                        try {
-                            await sendToNapCat(`${baseUrl}${endpoint}`, msgPayload, token);
-                            console.log("[NapCat] Reply sent successfully");
-                        } catch (err) {
-                            console.error("[NapCat] Reply delivery failed (suppressed to avoid channel crash):", err);
-                        }
-                    },
-                    onError: (err, info) => {
-                        typingController.stop();
-                        console.error(`[NapCat] Reply error (${info.kind}):`, err);
-                    },
-                });
-            }
-
-            if (!dispatcher) {
-                console.error("[NapCat] Could not create dispatcher");
-                res.statusCode = 503;
-                res.setHeader("Content-Type", "application/json");
-                res.end('{"status":"error","message":"dispatcher creation failed"}');
-                return true;
-            }
-
-            console.log("[NapCat] Dispatcher created, methods:", Object.keys(dispatcher));
-
-            // Dispatch the message to OpenClaw
-            try {
-                await typingController.start();
-                await runtime.channel.reply.dispatchReplyFromConfig({
-                    ctx: ctxPayload,
-                    cfg,
-                    dispatcher,
-                    replyOptions: {
-                        ...dispatcherReplyOptions,
-                        disableBlockStreaming: !isNapCatStreamingModeEnabled(config),
-                    },
-                });
-            } finally {
-                typingController.stop();
-                markDispatchIdle?.();
-            }
-            
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json");
-            res.end('{"status":"ok"}');
-            return true;
-        }
-
-        // Default OK for handled path
+      // Check allowlist logic
+      // If allowUsers is configured, only listed users should trigger the bot.
+      // This applies to both DMs and Group chats.
+      if (allowUsers.length > 0 && !isAllowUser) {
+        console.log(
+          `[NapCat] Ignoring message from ${senderId} (not in allowlist)`,
+        );
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
         res.end('{"status":"ok"}');
         return true;
-    } catch (err) {
-        console.error("NapCat Webhook Error:", err);
-        res.statusCode = 500;
-        res.end("error");
+      }
+
+      // Group message handling
+      const enableGroupMessages = config.enableGroupMessages || false;
+      const groupMentionOnly = config.groupMentionOnly !== false; // Default true
+      const groupKeywords = Array.isArray(config.groupKeywords)
+        ? config.groupKeywords
+            .filter((k: any) => k && typeof k === "string")
+            .map((k: string) => k.trim().toLowerCase())
+        : [];
+      const groupWhitelist = Array.isArray(config.groupWhitelist)
+        ? config.groupWhitelist
+            .map((id: any) => String(id).trim())
+            .filter(Boolean)
+        : [];
+      let wasMentioned = !isGroup; // In DMs, we consider it "mentioned"
+
+      if (isGroup) {
+        if (!enableGroupMessages) {
+          // Group messages disabled - ignore
+          console.log(
+            `[NapCat] Ignoring group message (group messages disabled)`,
+          );
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end('{"status":"ok"}');
+          return true;
+        }
+
+        if (groupWhitelist.length > 0 && !groupWhitelist.includes(groupId)) {
+          console.log(
+            `[NapCat] Ignoring group message from ${groupId} (not in group whitelist)`,
+          );
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end('{"status":"ok"}');
+          return true;
+        }
+
+        const botId = event.self_id || config.selfId;
+        if (groupMentionOnly) {
+          // Check if bot was mentioned
+          // NapCat sends self_id as the bot's QQ number
+          if (!botId) {
+            console.log(
+              `[NapCat] Cannot determine bot ID, ignoring group message`,
+            );
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end('{"status":"ok"}');
+            return true;
+          }
+
+          // Check for bot mention in raw_message
+          // Support two formats:
+          // 1. CQ code format: [CQ:at,qq={botId}] or [CQ:at,qq=all]
+          // 2. Plain text format: @Nickname (botId) or @botId
+          const mentionPatternCQ = new RegExp(`\\[CQ:at,qq=${botId}\\]`, "i");
+          const allMentionPatternCQ = /\[CQ:at,qq=all\]/i;
+
+          // Plain text mention patterns: @xxx (123456) or @123456
+          const mentionPatternPlain1 = new RegExp(
+            `@[^\\s]+ \\(${botId}\\)`,
+            "i",
+          );
+          const mentionPatternPlain2 = new RegExp(`@${botId}(?:\\s|$|,)`, "i");
+
+          const mentionSource = rawText || text;
+          const isMentionedCQ =
+            mentionPatternCQ.test(mentionSource) ||
+            allMentionPatternCQ.test(mentionSource);
+          const isMentionedPlain =
+            mentionPatternPlain1.test(text) || mentionPatternPlain2.test(text);
+
+          // Check keyword triggers: if message contains any configured keyword, respond without @mention
+          const hasKeywordTrigger =
+            groupKeywords.length > 0 &&
+            groupKeywords.some((kw: string) => text.toLowerCase().includes(kw));
+
+          if (!isMentionedCQ && !isMentionedPlain && !hasKeywordTrigger) {
+            console.log(`[NapCat] Ignoring group message (bot not mentioned)`);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end('{"status":"ok"}');
+            return true;
+          }
+
+          wasMentioned = true;
+          if (hasKeywordTrigger) {
+            console.log(
+              `[NapCat] Group message matched keyword trigger, processing`,
+            );
+          } else {
+            console.log(`[NapCat] Bot mentioned in group, processing message`);
+          }
+        } else {
+          // Check for mention anyway to update wasMentioned
+          if (botId) {
+            const mentionPatternCQ = new RegExp(`\\[CQ:at,qq=${botId}\\]`, "i");
+            const allMentionPatternCQ = /\[CQ:at,qq=all\]/i;
+            const mentionPatternPlain1 = new RegExp(
+              `@[^\\s]+ \\(${botId}\\)`,
+              "i",
+            );
+            const mentionPatternPlain2 = new RegExp(
+              `@${botId}(?:\\s|$|,)`,
+              "i",
+            );
+            const mentionSource = rawText || text;
+            wasMentioned =
+              mentionPatternCQ.test(mentionSource) ||
+              allMentionPatternCQ.test(mentionSource) ||
+              mentionPatternPlain1.test(text) ||
+              mentionPatternPlain2.test(text);
+          }
+          // Also check keyword triggers
+          if (!wasMentioned && groupKeywords.length > 0) {
+            wasMentioned = groupKeywords.some((kw: string) =>
+              text.toLowerCase().includes(kw),
+            );
+          }
+        }
+
+        // Strip mentions from text for cleaner processing and command detection
+        if (botId) {
+          const stripCQ = new RegExp(`^\\[CQ:at,qq=${botId}\\]\\s*`, "i");
+          const stripAll = /^\[CQ:at,qq=all\]\s*/i;
+          const stripAllPlain = /^@全体成员\s*/i;
+          const stripPlain1 = new RegExp(`^@[^\\s]+ \\(${botId}\\)\\s*`, "i");
+          const stripPlain2 = new RegExp(`^@${botId}(?:\\s|$|,)\\s*`, "i");
+          text = text
+            .replace(stripCQ, "")
+            .replace(stripAll, "")
+            .replace(stripAllPlain, "")
+            .replace(stripPlain1, "")
+            .replace(stripPlain2, "")
+            .trim();
+        }
+      }
+
+      const messageId = String(event.message_id);
+      // OpenClaw convention: conversationId differentiates chats
+      // We prefix with type to help outbound routing
+      const conversationId = isGroup
+        ? `group:${event.group_id}`
+        : `private:${senderId}`;
+      const senderName = isGroup
+        ? event.sender?.card || event.sender?.nickname || senderId
+        : event.sender?.nickname || senderId;
+
+      // Generate NapCat base session key by conversation type
+      // Base format: session:napcat:private:{userId} or session:napcat:group:{groupId}
+      const baseSessionKey = isGroup
+        ? `session:napcat:group:${event.group_id}`
+        : `session:napcat:private:${senderId}`;
+      const cfg = runtime.config?.current?.() || {};
+      const peer = isGroup
+        ? { kind: "group", id: String(event.group_id) }
+        : { kind: "direct", id: senderId };
+
+      // Resolve route for this message with specific session key
+      // Note: OpenClaw SDK ignores the sessionKey param, so we must override it after
+      const route = await runtime.channel.routing.resolveAgentRoute({
+        channel: "napcat",
+        conversationId,
+        senderId,
+        text,
+        cfg,
+        ctx: {},
+        peer,
+      });
+
+      if (!route?.agentId) {
+        console.log("[NapCat] No route found for message, ignoring");
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end('{"status":"ok"}');
         return true;
+      }
+
+      const configuredAgentId = String(config.agentId || "")
+        .trim()
+        .toLowerCase();
+      const routeAgentId = String(route.agentId || "")
+        .trim()
+        .toLowerCase();
+      const effectiveAgentId = routeAgentId || configuredAgentId || "main";
+      const sessionKey = `agent:${effectiveAgentId}:${baseSessionKey}`;
+
+      // User requested to use session key as display name for consistency
+      const sessionDisplayName = sessionKey;
+
+      // Log for debugging
+      console.log(
+        `[NapCat] Inbound from ${senderId} (session: ${sessionKey}): ${text.substring(0, 50)}...`,
+      );
+      if (configuredAgentId && configuredAgentId !== routeAgentId) {
+        console.log(
+          `[NapCat] Route agent (${routeAgentId || "none"}) differs from configured agent (${configuredAgentId}); route takes precedence`,
+        );
+      }
+
+      // Force our custom session key and configured agent
+      route.agentId = effectiveAgentId;
+      route.sessionKey = sessionKey;
+
+      // 获取引用消息的上下文（逐层追溯引用链）
+      const replyContext = await buildNapCatReplyContextBlock({
+        event,
+        config,
+      });
+      let replyContextBlock = "";
+      let replyToId: string | undefined;
+      let replyToBody: string | undefined;
+      let replyToSender: string | undefined;
+      if (replyContext.block && replyContext.repliedMsg) {
+        replyContextBlock = replyContext.block;
+        replyToId = String(replyContext.replyId || "");
+        const replied = replyContext.repliedMsg;
+        // 将被引用的原始消息渲染为纯文本
+        replyToBody = Array.isArray(replied.message)
+          ? normalizeRenderedMessageText(
+              replied.message
+                .map((seg: any) => {
+                  const t = String(seg?.type || "").toLowerCase();
+                  const data = seg?.data || {};
+                  if (t === "text") return data.text || "";
+                  if (t === "image") return "[图片]";
+                  if (t === "record") return "[语音]";
+                  if (t === "video") return "[视频]";
+                  if (t === "file")
+                    return `[文件:${data.name || data.file || "未命名"}]`;
+                  if (t === "face") return "[表情]";
+                  if (t === "forward") return "[合并转发]";
+                  if (t === "reply") return "";
+                  return "";
+                })
+                .filter(Boolean)
+                .join(" "),
+            )
+          : normalizeRenderedMessageText(String(replied.raw_message || ""));
+        replyToSender = isGroup
+          ? replied.sender?.card ||
+            replied.sender?.nickname ||
+            String(replied.sender?.user_id || "")
+          : replied.sender?.nickname ||
+            replied.sender?.card ||
+            String(replied.sender?.user_id || "");
+      }
+
+      // 将引用上下文块注入到消息正文前面，智能体能看到引用的历史消息
+      const bodyWithReplyContext = replyContextBlock
+        ? `${replyContextBlock}${text}`
+        : text;
+
+      // Build ctxPayload using runtime methods
+      const ctxPayload: Record<string, unknown> = {
+        Body: bodyWithReplyContext,
+        RawBody: rawText,
+        CommandBody: bodyWithReplyContext,
+        From: `napcat:${conversationId}`,
+        To: "me",
+        SessionKey: sessionKey, // Use our custom session key
+        SessionDisplayName: sessionDisplayName,
+        displayName: sessionDisplayName,
+        name: sessionDisplayName,
+        Title: sessionDisplayName,
+        ConversationTitle: sessionDisplayName,
+        Topic: sessionDisplayName,
+        Subject: sessionDisplayName,
+        AccountId: route.accountId,
+        ChatType: isGroup ? "group" : "direct",
+        ConversationLabel: sessionKey,
+        SenderName: senderName,
+        SenderId: senderId,
+        Provider: "napcat",
+        Surface: "napcat",
+        MessageSid: messageId,
+        WasMentioned: wasMentioned,
+        CommandAuthorized: true,
+        OriginatingChannel: "napcat",
+        OriginatingTo: conversationId,
+      };
+      if (replyToId) ctxPayload.ReplyToId = replyToId;
+      if (replyToBody) ctxPayload.ReplyToBody = replyToBody;
+      if (replyToSender) ctxPayload.ReplyToSender = replyToSender;
+
+      // Create dispatcher for replies
+      let dispatcher = null;
+      let dispatcherReplyOptions: Record<string, unknown> = {};
+      let markDispatchIdle: (() => void) | null = null;
+
+      const typingController = createPrivateTypingStatusController({
+        enabled: !isGroup && isNapCatPrivateTypingEnabled(config),
+        userId: senderId,
+        token: String(config.token || "").trim(),
+      });
+
+      if (runtime.channel.reply.createReplyDispatcherWithTyping) {
+        console.log("[NapCat] Calling createReplyDispatcherWithTyping...");
+        const result =
+          await runtime.channel.reply.createReplyDispatcherWithTyping({
+            responsePrefix: "",
+            responsePrefixContextProvider: () => ({}),
+            humanDelay: 0,
+            deliver: async (payload) => {
+              typingController.stop();
+              console.log(
+                "[NapCat] Reply to deliver:",
+                JSON.stringify(payload).substring(0, 100),
+              );
+              // Actually send the message via NapCat API
+              const config = getNapCatConfig();
+              const baseUrl = config.url || "http://127.0.0.1:15150";
+              const token = String(config.token || "").trim();
+              const isGroup = conversationId.startsWith("group:");
+              const targetId = isGroup
+                ? conversationId.replace("group:", "")
+                : conversationId.replace("private:", "");
+              const endpoint = isGroup
+                ? "/send_group_msg"
+                : "/send_private_msg";
+              const message = await buildNapCatMessageFromReply(
+                payload,
+                config,
+              );
+              if (!message) {
+                console.log("[NapCat] Skip empty reply payload");
+                return;
+              }
+              const msgPayload: Record<string, string> = { message };
+              if (isGroup) msgPayload.group_id = targetId;
+              else msgPayload.user_id = targetId;
+
+              console.log(
+                `[NapCat] Sending reply to ${isGroup ? "group" : "private"} ${targetId}: ${message.substring(0, 50)}...`,
+              );
+              try {
+                await sendToNapCat(`${baseUrl}${endpoint}`, msgPayload, token);
+                console.log("[NapCat] Reply sent successfully");
+              } catch (err) {
+                console.error(
+                  "[NapCat] Reply delivery failed (suppressed to avoid channel crash):",
+                  err,
+                );
+              }
+            },
+            onError: (err, info) => {
+              typingController.stop();
+              console.error(`[NapCat] Reply error (${info.kind}):`, err);
+            },
+            onReplyStart: () => {
+              typingController.stop();
+            },
+            onIdle: () => {
+              typingController.stop();
+            },
+          });
+        dispatcher = result.dispatcher;
+        dispatcherReplyOptions = result.replyOptions || {};
+        markDispatchIdle = result.markDispatchIdle || null;
+      } else if (runtime.channel.reply.createReplyDispatcher) {
+        dispatcher = runtime.channel.reply.createReplyDispatcher({
+          responsePrefix: "",
+          responsePrefixContextProvider: () => ({}),
+          humanDelay: 0,
+          deliver: async (payload) => {
+            typingController.stop();
+            console.log(
+              "[NapCat] Reply to deliver:",
+              JSON.stringify(payload).substring(0, 100),
+            );
+            // Actually send the message via NapCat API
+            const config = getNapCatConfig();
+            const baseUrl = config.url || "http://127.0.0.1:15150";
+            const token = String(config.token || "").trim();
+            const isGroup = conversationId.startsWith("group:");
+            const targetId = isGroup
+              ? conversationId.replace("group:", "")
+              : conversationId.replace("private:", "");
+            const endpoint = isGroup ? "/send_group_msg" : "/send_private_msg";
+            const message = await buildNapCatMessageFromReply(payload, config);
+            if (!message) {
+              console.log("[NapCat] Skip empty reply payload");
+              return;
+            }
+            const msgPayload: Record<string, string> = { message };
+            if (isGroup) msgPayload.group_id = targetId;
+            else msgPayload.user_id = targetId;
+
+            console.log(
+              `[NapCat] Sending reply to ${isGroup ? "group" : "private"} ${targetId}: ${message.substring(0, 50)}...`,
+            );
+            try {
+              await sendToNapCat(`${baseUrl}${endpoint}`, msgPayload, token);
+              console.log("[NapCat] Reply sent successfully");
+            } catch (err) {
+              console.error(
+                "[NapCat] Reply delivery failed (suppressed to avoid channel crash):",
+                err,
+              );
+            }
+          },
+          onError: (err, info) => {
+            typingController.stop();
+            console.error(`[NapCat] Reply error (${info.kind}):`, err);
+          },
+        });
+      }
+
+      if (!dispatcher) {
+        console.error("[NapCat] Could not create dispatcher");
+        res.statusCode = 503;
+        res.setHeader("Content-Type", "application/json");
+        res.end('{"status":"error","message":"dispatcher creation failed"}');
+        return true;
+      }
+
+      console.log(
+        "[NapCat] Dispatcher created, methods:",
+        Object.keys(dispatcher),
+      );
+
+      // Dispatch the message to OpenClaw
+      try {
+        await typingController.start();
+        await runtime.channel.reply.dispatchReplyFromConfig({
+          ctx: ctxPayload,
+          cfg,
+          dispatcher,
+          replyOptions: {
+            ...dispatcherReplyOptions,
+            disableBlockStreaming: !isNapCatStreamingModeEnabled(config),
+          },
+        });
+      } finally {
+        typingController.stop();
+        markDispatchIdle?.();
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end('{"status":"ok"}');
+      return true;
     }
+
+    // Default OK for handled path
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end('{"status":"ok"}');
+    return true;
+  } catch (err) {
+    console.error("NapCat Webhook Error:", err);
+    res.statusCode = 500;
+    res.end("error");
+    return true;
+  }
 }
