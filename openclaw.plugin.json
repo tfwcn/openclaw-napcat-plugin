@@ -55,6 +55,13 @@
             "description": "In group chats, only respond when the bot is mentioned (@)",
             "default": true
           },
+          "groupKeywords": {
+            "type": "array",
+            "items": { "type": "string" },
+            "title": "Group Keyword Triggers",
+            "description": "Keywords that trigger a response in group chats without needing @mention (e.g. [\"机器人\",\"天气\"])",
+            "default": []
+          },
           "enablePrivateTypingStatus": {
             "type": "boolean",
             "title": "Enable Private Typing Status",

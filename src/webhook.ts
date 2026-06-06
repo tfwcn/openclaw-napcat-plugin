@@ -690,6 +690,9 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
             // Group message handling
             const enableGroupMessages = config.enableGroupMessages || false;
             const groupMentionOnly = config.groupMentionOnly !== false; // Default true
+            const groupKeywords = Array.isArray(config.groupKeywords)
+                ? config.groupKeywords.filter((k: any) => k && typeof k === "string").map((k: string) => k.trim().toLowerCase())
+                : [];
             const groupWhitelist = Array.isArray(config.groupWhitelist)
                 ? config.groupWhitelist.map((id: any) => String(id).trim()).filter(Boolean)
                 : [];
@@ -740,7 +743,11 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
                     const isMentionedCQ = mentionPatternCQ.test(mentionSource) || allMentionPatternCQ.test(mentionSource);
                     const isMentionedPlain = mentionPatternPlain1.test(text) || mentionPatternPlain2.test(text);
 
-                    if (!isMentionedCQ && !isMentionedPlain) {
+                    // Check keyword triggers: if message contains any configured keyword, respond without @mention
+                    const hasKeywordTrigger = groupKeywords.length > 0 &&
+                        groupKeywords.some((kw: string) => text.toLowerCase().includes(kw));
+
+                    if (!isMentionedCQ && !isMentionedPlain && !hasKeywordTrigger) {
                         console.log(`[NapCat] Ignoring group message (bot not mentioned)`);
                         res.statusCode = 200;
                         res.setHeader("Content-Type", "application/json");
@@ -749,7 +756,11 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
                     }
 
                     wasMentioned = true;
-                    console.log(`[NapCat] Bot mentioned in group, processing message`);
+                    if (hasKeywordTrigger) {
+                        console.log(`[NapCat] Group message matched keyword trigger, processing`);
+                    } else {
+                        console.log(`[NapCat] Bot mentioned in group, processing message`);
+                    }
                 } else {
                     // Check for mention anyway to update wasMentioned
                     if (botId) {
@@ -760,6 +771,10 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
                         const mentionSource = rawText || text;
                         wasMentioned = mentionPatternCQ.test(mentionSource) || allMentionPatternCQ.test(mentionSource) || 
                                        mentionPatternPlain1.test(text) || mentionPatternPlain2.test(text);
+                    }
+                    // Also check keyword triggers
+                    if (!wasMentioned && groupKeywords.length > 0) {
+                        wasMentioned = groupKeywords.some((kw: string) => text.toLowerCase().includes(kw));
                     }
                 }
 

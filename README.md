@@ -31,6 +31,7 @@
 - 语音发送（WAV 等音频）
 - 群文件上传
 - 白名单控制（只允许指定 QQ 号触发）
+- 关键字触发（无需 @ 即可在群里唤醒机器人）
 - 入站消息日志记录
 - 私聊处理中显示“正在输入”
 
@@ -73,13 +74,16 @@
 
 ### 第 1 步：安装插件
 
-推荐直接按 **npm 包名** 安装：
+由于这是基于原 `@propersama/openclaw-napcat` 的 fork 版本，推荐从**本地路径**安装：
 
 ```bash
-openclaw plugins install @propersama/openclaw-napcat
-```
+# 先构建
+cd /path/to/openclaw-napcat-plugin
+npm install && npm run build
 
-如果你后面改成了自己的 npm scope，就把上面的包名替换成你实际发布的那个名字。
+# 安装到 OpenClaw（--link 会建立符号链接，后续更新只需 git pull + npm run build）
+openclaw plugins install /path/to/openclaw-napcat-plugin --link
+```
 
 ---
 
@@ -99,13 +103,18 @@ openclaw plugins enable napcat
 项目里有一个 `skill/napcat-qq`。  
 把它放到 OpenClaw 的 skill 目录里，可以让 OpenClaw 更稳定地使用这个 QQ 通道。
 
-如果你已经有自己的技能目录管理方式，也可以按你的习惯来。
+```bash
+# 软链接（推荐，后续 git pull 自动同步）
+ln -sf /path/to/openclaw-napcat-plugin/skill/napcat-qq ~/.openclaw/skills/napcat-qq
+
+# 或者直接复制
+cp -r skill/napcat-qq ~/.openclaw/skills/napcat-qq
+```
 
 注意：
 
-- 通过 npm 安装插件时，`skill/napcat-qq` 会随包发布
-- 但其中的 `scripts/qq-contact-search.js` 默认**不会**随 npm 包一起安装
-- 如果你需要“按昵称 / 备注 / 群名搜索联系人”的能力，可以按下面“按昵称或备注找 QQ / 群”的说明，手动把这个脚本放回对应的 skill 目录
+- 插件项目里的 `skill/` 文件夹**不会被 OpenClaw 自动加载**，必须放到 `~/.openclaw/skills/` 下才生效
+- 软链接的好处是后续 `git pull` 更新代码后 skill 自动同步，无需再次复制
 
 ---
 
@@ -152,7 +161,7 @@ openclaw plugins enable napcat
 - `enablePrivateTypingStatus` 为 `true` 时，私聊里 OpenClaw 思考期间会尝试显示 QQ “正在输入”
 - 允许处理群消息
 - `groupWhitelist` 留空时不过滤群；填了之后只响应指定群
-- 但群里必须 **@ 机器人** 才会回复
+- 但群里必须 **@ 机器人** 才会回复（除非配置了 `groupKeywords` 关键字触发）
 
 ---
 
@@ -255,7 +264,7 @@ http://192.168.1.10:18789/napcat
 
 - `groupWhitelist` 为空时，不按群号过滤
 - `groupWhitelist` 不为空时，只处理白名单里的群消息
-- 它和 `allowUsers`、`enableGroupMessages`、`groupMentionOnly` 可以同时使用
+- 它和 `allowUsers`、`enableGroupMessages`、`groupMentionOnly`、`groupKeywords` 可以同时使用
 
 ---
 
@@ -304,6 +313,23 @@ http://192.168.1.10:18789/napcat
 适合：你非常确定自己需要“全群监听”。  
 否则容易太吵，也更容易误触发。  
 如果只想监听少数几个群，建议同时配置 `groupWhitelist`。
+
+---
+
+### 模式 4：关键字触发（推荐平衡方案）
+
+```json
+{
+  "enableGroupMessages": true,
+  "groupWhitelist": ["123456789"],
+  "groupMentionOnly": true,
+  "groupKeywords": ["机器人", "天气", "日报"]
+}
+```
+
+适合：既不想每条消息都回复，又不想每次都要 @ 机器人。  
+当群里出现 `groupKeywords` 中任意关键字时，机器人会直接回复；其他消息仍然需要 @ 才回复。  
+关键字匹配**不区分大小写**，支持子串匹配（比如关键字"天气"能匹配到"今天天气怎么样"）。
 
 ---
 
@@ -581,8 +607,7 @@ test.wav
 
 issue #3 对应的改动已经包含在仓库里：现在提供了一个简单的联系人搜索脚本，适合配合 `skill/napcat-qq` 一起用。
 
-为了避免 OpenClaw 的安装安全扫描误判，这个脚本默认**不会包含在 npm 发布包里**。  
-如果你是通过 `openclaw plugins install @propersama/openclaw-napcat` 安装的插件，并且想启用联系人搜索，请手动从仓库复制这个文件到本地 skill 目录。
+注意：如果克隆本仓库后用 `--link` 安装，这个脚本在项目 `skill/` 目录下，但仍然需要复制或软链接到 `~/.openclaw/skills/` 才能被 OpenClaw 使用（参见上方第 3 步）。
 
 脚本路径：
 
@@ -632,6 +657,7 @@ node skill/napcat-qq/scripts/qq-contact-search.js 老王 private
       "enableGroupMessages": true,
       "groupWhitelist": ["123456789", "987654321"],
       "groupMentionOnly": true,
+      "groupKeywords": ["机器人", "天气"],
       "mediaProxyEnabled": true,
       "publicBaseUrl": "http://127.0.0.1:18789",
       "mediaProxyToken": "change-me",
@@ -671,6 +697,7 @@ node skill/napcat-qq/scripts/qq-contact-search.js 老王 private
 | `streaming_mode` | boolean | 是否启用流式传输模式；开启后会按处理步骤连续发送 QQ 消息 | `false` |
 | `enablePrivateTypingStatus` | boolean | 是否在私聊处理中调用 NapCat 的输入状态接口，显示 QQ “正在输入” | `true` |
 | `groupMentionOnly` | boolean | 群里是否必须 @ 机器人才处理 | `true` |
+| `groupKeywords` | string[] | 关键字触发列表，包含这些关键字的消息无需 @ 也会回复（空数组=关闭） | `[]` |
 | `mediaProxyEnabled` | boolean | 是否开启媒体代理，解决跨机器图片/语音发送问题 | `false` |
 | `publicBaseUrl` | string | OpenClaw 对 NapCat 可访问的地址 | `""` |
 | `mediaProxyToken` | string | 媒体代理的访问令牌（可选） | `""` |
@@ -724,6 +751,7 @@ node skill/napcat-qq/scripts/qq-contact-search.js 老王 private
 - `enableGroupMessages` 有没有设成 `true`
 - `groupWhitelist` 有没有把当前群拦掉
 - `groupMentionOnly` 是否开启
+- 如果开启了 `groupMentionOnly`，你配了 `groupKeywords` 吗？
 - 你在群里有没有真的 @ 到机器人
 - `allowUsers` 有没有把发消息的人拦掉
 
@@ -785,7 +813,7 @@ openclaw-napcat-plugin/
 └── skill/
     └── napcat-qq         # 配套 skill
         └── scripts/
-            └── qq-contact-search.js   # 联系人搜索脚本，npm 包默认不包含，需按需手动安装
+            └── qq-contact-search.js   # 联系人搜索脚本
 ```
 
 ---
