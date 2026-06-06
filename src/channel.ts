@@ -194,6 +194,12 @@ export const napcatPlugin = {
                 description: "Keywords that trigger a response in group chats without needing @mention (e.g. [\"机器人\",\"天气\"])",
                 default: []
             },
+            preferGroupCard: {
+                type: "boolean",
+                title: "Prefer Group Card Name",
+                description: "When enabled, group messages use the group-specific card name (群名片/群昵称) instead of QQ nickname for sender display",
+                default: true
+            },
             enablePrivateTypingStatus: {
                 type: "boolean",
                 title: "Enable Private Typing Status",

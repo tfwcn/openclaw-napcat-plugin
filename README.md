@@ -328,6 +328,20 @@ http://192.168.1.10:18789/napcat
 
 这意味着智能体在回复时会用群里的称呼叫你，而不是你的 QQ 昵称或 QQ 号。
 
+可通过配置 `preferGroupCard` 关闭此行为：
+
+```json
+{
+  "channels": {
+    "napcat": {
+      "preferGroupCard": false
+    }
+  }
+}
+```
+
+关闭后，群消息也使用 QQ 昵称（`nickname`）而非群昵称。
+
 ---
 
 ### 模式 4：关键字触发（推荐平衡方案）
@@ -712,6 +726,7 @@ node skill/napcat-qq/scripts/qq-contact-search.js 老王 private
 | `enablePrivateTypingStatus` | boolean | 是否在私聊处理中调用 NapCat 的输入状态接口，显示 QQ “正在输入” | `true` |
 | `groupMentionOnly` | boolean | 群里是否必须 @ 机器人才处理 | `true` |
 | `groupKeywords` | string[] | 关键字触发列表，包含这些关键字的消息无需 @ 也会回复（空数组=关闭） | `[]` |
+| `preferGroupCard` | boolean | 群消息是否优先使用群昵称（群名片）而非 QQ 昵称作为发送者名称 | `true` |
 | `mediaProxyEnabled` | boolean | 是否开启媒体代理，解决跨机器图片/语音发送问题 | `false` |
 | `publicBaseUrl` | string | OpenClaw 对 NapCat 可访问的地址 | `""` |
 | `mediaProxyToken` | string | 媒体代理的访问令牌（可选） | `""` |

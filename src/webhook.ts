@@ -634,8 +634,9 @@ async function buildNapCatReplyContextBlock(params: {
 
       if (layer === 1) firstRepliedMsg = msg;
 
-      const senderName =
-        msg?.sender?.card || msg?.sender?.nickname || msg?.user_id || "unknown";
+      const senderName = config.preferGroupCard !== false
+        ? (msg?.sender?.card || msg?.sender?.nickname || msg?.user_id || "unknown")
+        : (msg?.sender?.nickname || msg?.user_id || "unknown");
       const rawMsg = Array.isArray(msg?.message)
         ? msg.message
         : msg?.raw_message || "";
@@ -1175,7 +1176,7 @@ export async function handleNapCatWebhook(
       const conversationId = isGroup
         ? `group:${event.group_id}`
         : `private:${senderId}`;
-      const senderName = isGroup
+      const senderName = isGroup && config.preferGroupCard !== false
         ? event.sender?.card || event.sender?.nickname || senderId
         : event.sender?.nickname || senderId;
 
@@ -1270,7 +1271,7 @@ export async function handleNapCatWebhook(
                 .join(" "),
             )
           : normalizeRenderedMessageText(String(replied.raw_message || ""));
-        replyToSender = isGroup
+        replyToSender = isGroup && config.preferGroupCard !== false
           ? replied.sender?.card ||
             replied.sender?.nickname ||
             String(replied.sender?.user_id || "")
