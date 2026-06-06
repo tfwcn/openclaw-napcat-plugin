@@ -254,6 +254,41 @@ export const napcatPlugin = {
                 description: "Container directory corresponding to stage host dir (e.g. /app/napcat/plugins/upload-staging)",
                 default: ""
             },
+            // 引用上下文：当用户回复一条消息时，自动获取被引用消息的内容注入给智能体
+            enrichReplyContext: {
+                type: "boolean",
+                title: "解析引用消息上下文",
+                description: "开启后，用户回复消息时会自动获取被引用的消息内容，作为上下文提供给智能体",
+                default: true
+            },
+            // 引用链最大递归层数（用户回复A，A又回复B，则B也会被追溯）
+            maxReplyLayers: {
+                type: "integer",
+                title: "引用链最大层数",
+                description: "引用消息的递归追溯层数上限（默认 5）",
+                default: 5
+            },
+            // 每层引用消息的最大字符数
+            maxCharsPerLayer: {
+                type: "integer",
+                title: "每层引用最大字符数",
+                description: "每层引用消息最多保留的字符数（默认 500）",
+                default: 500
+            },
+            // 所有引用上下文的总字符上限
+            maxTotalContextChars: {
+                type: "integer",
+                title: "引用上下文总字符上限",
+                description: "所有引用上下文字符总数上限（默认 2000）",
+                default: 2000
+            },
+            // 每层引用是否附带发送者昵称
+            includeSenderInLayers: {
+                type: "boolean",
+                title: "引用层显示发送者",
+                description: "每层引用是否附带发送者昵称/ID",
+                default: true
+            },
             enableInboundLogging: {
                 type: "boolean",
                 title: "Enable Inbound Message Logging",

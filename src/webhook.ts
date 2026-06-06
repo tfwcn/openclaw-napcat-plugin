@@ -416,6 +416,197 @@ async function fetchNapCatForwardEntries(
     }
 }
 
+// 通过 NapCat HTTP API 获取指定消息的完整内容
+async function fetchNapCatMsg(
+    messageId: string,
+    config: any
+): Promise<any | null> {
+    const normalizedId = String(messageId || "").trim();
+    if (!normalizedId) return null;
+
+    const baseUrl = String(config.url || "http://127.0.0.1:15150").trim().replace(/\/+$/, "");
+    const token = String(config.token || "").trim();
+
+    // NapCat 的 get_msg 接口可能接受 message_id 或 id 参数，都试一下
+    const tries: Array<Record<string, any>> = [
+        { message_id: normalizedId },
+        { id: normalizedId },
+    ];
+    if (/^\d+$/.test(normalizedId)) {
+        const n = Number.parseInt(normalizedId, 10);
+        tries.unshift({ message_id: n });
+        tries.push({ id: n });
+    }
+
+    let lastErr: unknown;
+    for (const params of tries) {
+        try {
+            const result = await sendToNapCat(`${baseUrl}/get_msg`, params, token);
+            const data = result?.data ?? result;
+            if (data && typeof data === "object" && (data.message || data.raw_message)) {
+                return data;
+            }
+        } catch (err) {
+            console.warn(`[NapCat] get_msg failed for ${normalizedId}: ${String(err)}`);
+            lastErr = err;
+        }
+    }
+    return null;
+}
+
+// 从消息段数组中提取 reply 类型的引用消息 ID
+function getNapCatReplyMessageId(segments: any[]): string | null {
+    if (!Array.isArray(segments)) return null;
+    for (const seg of segments) {
+        if (!seg || typeof seg !== "object") continue;
+        const type = String(seg?.type || "").trim().toLowerCase();
+        if (type !== "reply" && type !== "quote") continue;
+        const data = seg?.data && typeof seg.data === "object" ? seg.data : {};
+        const idCandidate = data.id ?? data.message_id ?? data.reply;
+        const id = typeof idCandidate === "number" ? String(idCandidate) : String(idCandidate || "").trim();
+        if (id && /^-?\d+$/.test(id)) return id;
+    }
+    return null;
+}
+
+// 从 CQ 码格式的原始消息中提取引用消息 ID
+function getNapCatReplyIdFromRaw(raw: string): string | null {
+    if (!raw) return null;
+    const match = raw.match(/\[CQ:reply,id=(\d+)\]/);
+    if (match) return match[1];
+    return null;
+}
+
+// 综合多种方式从事件中提取引用消息 ID
+function getNapCatReplyIdFromEvent(event: any): string | null {
+    // 先从消息段数组中找 reply 类型
+    const segments = extractNapCatMessageSegments(event?.message);
+    const fromSegments = getNapCatReplyMessageId(segments);
+    if (fromSegments) return fromSegments;
+
+    // 再查 CQ 码格式的原始消息
+    const fromRaw = getNapCatReplyIdFromRaw(event?.raw_message || event?.message);
+    if (fromRaw) return fromRaw;
+
+    // 最后查事件顶层字段（部分实现会放在 source/reply 字段里）
+    const candidates = [
+        event?.source?.message_id,
+        event?.source?.id,
+        event?.reply?.message_id,
+        event?.reply?.id,
+    ];
+    for (const c of candidates) {
+        const id = typeof c === "number" ? String(c) : (typeof c === "string" ? c.trim() : "");
+        if (id && /^-?\d+$/.test(id)) return id;
+    }
+
+    return null;
+}
+
+// 递归解析引用链，构建 <context_layers> 上下文块注入给智能体
+async function buildNapCatReplyContextBlock(params: {
+    event: any;
+    config: any;
+}): Promise<{ block: string; repliedMsg: any | null; replyId: string | null }> {
+    const { event, config } = params;
+    if (config.enrichReplyContext === false) return { block: "", repliedMsg: null, replyId: null };
+
+    const replyId = getNapCatReplyIdFromEvent(event);
+    if (!replyId) return { block: "", repliedMsg: null, replyId: null };
+
+    // 从配置读取各层限制参数
+    const maxReplyLayers = Math.max(1, Math.trunc(config.maxReplyLayers ?? 5));
+    const maxCharsPerLayer = Math.max(100, Math.trunc(config.maxCharsPerLayer ?? 500));
+    const maxTotalContextChars = Math.max(300, Math.trunc(config.maxTotalContextChars ?? 2000));
+    const includeSender = config.includeSenderInLayers !== false;
+
+    const lines: string[] = [];
+    let usedChars = 0;
+    const pushLine = (line: string) => {
+        if (!line) return;
+        if (usedChars >= maxTotalContextChars) return;
+        const remaining = maxTotalContextChars - usedChars;
+        const safe = line.length <= remaining ? line : `${line.slice(0, Math.max(0, remaining - 1))}…`;
+        if (!safe) return;
+        lines.push(safe);
+        usedChars += safe.length + 1;
+    };
+
+    // 逐层追溯引用链，直到达到层数上限或无法继续
+    const seenIds = new Set<string>();
+    let cursorId: string | null = replyId;
+    let firstRepliedMsg: any | null = null;
+
+    for (let layer = 1; layer <= maxReplyLayers && cursorId; layer++) {
+        if (seenIds.has(cursorId)) break;
+        seenIds.add(cursorId);
+
+        try {
+            const msg = await fetchNapCatMsg(cursorId, config);
+            if (!msg) break;
+
+            if (layer === 1) firstRepliedMsg = msg;
+
+            const senderName = msg?.sender?.nickname || msg?.sender?.card || msg?.user_id || "unknown";
+            const rawMsg = Array.isArray(msg?.message)
+                ? msg.message
+                : msg?.raw_message || "";
+
+            // 将消息段渲染为纯文本，非文本类型用方括号标签表示
+            const textContent = Array.isArray(rawMsg)
+                ? normalizeRenderedMessageText(
+                    rawMsg
+                        .map((seg: any) => {
+                            const t = String(seg?.type || "").toLowerCase();
+                            const data = seg?.data || {};
+                            if (t === "text") return data.text || "";
+                            if (t === "image") return "[图片]";
+                            if (t === "record") return "[语音]";
+                            if (t === "video") return "[视频]";
+                            if (t === "file") return `[文件:${data.name || data.file || "未命名"}]`;
+                            if (t === "face") return "[表情]";
+                            if (t === "forward") return "[合并转发]";
+                            if (t === "reply") return "";
+                            return "";
+                        })
+                        .filter(Boolean)
+                        .join(" ")
+                  )
+                : normalizeRenderedMessageText(String(rawMsg || ""));
+
+            const maxContent = maxCharsPerLayer;
+            const content = textContent.length > maxContent
+                ? `${textContent.slice(0, Math.max(0, maxContent - 1))}…`
+                : textContent;
+
+            const prefix = includeSender
+                ? `[Layer ${layer}][reply][from:${senderName}]`
+                : `[Layer ${layer}][reply]`;
+            pushLine(`${prefix} ${content || "(空文本)"}`);
+
+            // 检查被引用消息本身是否也引用了其他消息，继续追溯
+            const nextSegments = extractNapCatMessageSegments(msg?.message);
+            cursorId = nextSegments.length > 0
+                ? getNapCatReplyMessageId(nextSegments)
+                : null;
+        } catch {
+            break;
+        }
+    }
+
+    if (lines.length === 0) {
+        console.log(`[NapCat] reply context: found replyId=${replyId} but no content resolved`);
+        return { block: "", repliedMsg: null, replyId: null };
+    }
+
+    console.log(`[NapCat] reply context: resolved ${lines.length} layers for replyId=${replyId}`);
+    return {
+        block: `<context_layers>\n${lines.join("\n")}\n</context_layers>\n\n`,
+        repliedMsg: firstRepliedMsg,
+        replyId,
+    };
+}
+
 async function renderNapCatSegmentsToText(
     segments: any[],
     config: any,
@@ -849,11 +1040,50 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
             route.agentId = effectiveAgentId;
             route.sessionKey = sessionKey;
 
+            // 获取引用消息的上下文（逐层追溯引用链）
+            const replyContext = await buildNapCatReplyContextBlock({ event, config });
+            let replyContextBlock = "";
+            let replyToId: string | undefined;
+            let replyToBody: string | undefined;
+            let replyToSender: string | undefined;
+            if (replyContext.block && replyContext.repliedMsg) {
+                replyContextBlock = replyContext.block;
+                replyToId = String(replyContext.replyId || "");
+                const replied = replyContext.repliedMsg;
+                // 将被引用的原始消息渲染为纯文本
+                replyToBody = Array.isArray(replied.message)
+                    ? normalizeRenderedMessageText(
+                        replied.message
+                            .map((seg: any) => {
+                                const t = String(seg?.type || "").toLowerCase();
+                                const data = seg?.data || {};
+                                if (t === "text") return data.text || "";
+                                if (t === "image") return "[图片]";
+                                if (t === "record") return "[语音]";
+                                if (t === "video") return "[视频]";
+                                if (t === "file") return `[文件:${data.name || data.file || "未命名"}]`;
+                                if (t === "face") return "[表情]";
+                                if (t === "forward") return "[合并转发]";
+                                if (t === "reply") return "";
+                                return "";
+                            })
+                            .filter(Boolean)
+                            .join(" ")
+                      )
+                    : normalizeRenderedMessageText(String(replied.raw_message || ""));
+                replyToSender = replied.sender?.nickname || replied.sender?.card || String(replied.sender?.user_id || "");
+            }
+
+            // 将引用上下文块注入到消息正文前面，智能体能看到引用的历史消息
+            const bodyWithReplyContext = replyContextBlock
+                ? `${replyContextBlock}${text}`
+                : text;
+
             // Build ctxPayload using runtime methods
-            const ctxPayload = {
-                Body: text,
+            const ctxPayload: Record<string, unknown> = {
+                Body: bodyWithReplyContext,
                 RawBody: rawText,
-                CommandBody: text,
+                CommandBody: bodyWithReplyContext,
                 From: `napcat:${conversationId}`,
                 To: "me",
                 SessionKey: sessionKey,  // Use our custom session key
@@ -877,6 +1107,9 @@ export async function handleNapCatWebhook(req: IncomingMessage, res: ServerRespo
                 OriginatingChannel: "napcat",
                 OriginatingTo: conversationId,
             };
+            if (replyToId) ctxPayload.ReplyToId = replyToId;
+            if (replyToBody) ctxPayload.ReplyToBody = replyToBody;
+            if (replyToSender) ctxPayload.ReplyToSender = replyToSender;
 
             // Create dispatcher for replies
             let dispatcher = null;
